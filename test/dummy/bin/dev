@@ -1,0 +1,4 @@
+#!/usr/bin/env sh
+
+# Start the Rails server with puma
+exec bundle exec rails server

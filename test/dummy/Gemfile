@@ -1,0 +1,52 @@
+# frozen_string_literal: true
+
+source 'https://rubygems.org'
+
+# Use the parent gem
+gem 'throttle_machines', path: '../..'
+
+# Web server
+gem 'puma', '~> 6.0'
+
+# Rails
+gem 'rails', '~> 7.2'
+
+# Database
+gem 'pg', '~> 1.5'
+
+# Asset pipeline
+gem 'sprockets-rails'
+
+# JavaScript
+gem 'importmap-rails'
+
+# Hotwire
+gem 'stimulus-rails'
+gem 'turbo-rails'
+
+# JSON APIs
+gem 'jbuilder'
+
+# Reduces boot times through caching
+gem 'bootsnap', '>= 1.4.4', require: false
+
+group :development, :test do
+  # Debugging
+  gem 'debug', platforms: %i[mri mingw x64_mingw]
+  gem 'pry-rails'
+end
+
+group :development do
+  # Speed up commands on slow machines / big apps
+  gem 'spring'
+
+  # Error pages
+  gem 'web-console'
+end
+
+group :test do
+  # System testing
+  gem 'capybara'
+  gem 'selenium-webdriver'
+  gem 'webdrivers'
+end

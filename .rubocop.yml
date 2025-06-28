@@ -1,0 +1,80 @@
+# frozen_string_literal: true
+
+plugins:
+  - rubocop-minitest
+  - rubocop-performance
+  - rubocop-rails
+  - rubocop-rake
+
+AllCops:
+  TargetRubyVersion: 3.4
+  NewCops: enable
+  Exclude:
+    - 'vendor/**/*'
+    - 'bin/**/*'
+    - 'tmp/**/*'
+    - 'log/**/*'
+    - 'node_modules/**/*'
+
+# Gem-specific settings
+Gemspec/RequiredRubyVersion:
+  Enabled: true
+
+# Style preferences for distributed systems code
+Layout/LineLength:
+  Max: 120
+  AllowedPatterns:
+    - '\A\s*#'  # Allow long comments
+    - '\A\s*raise\s'  # Allow long raise statements
+
+Style/Documentation:
+  Enabled: false  # Disable for now, enable when documentation is ready
+
+Style/FrozenStringLiteralComment:
+  Enabled: true
+  EnforcedStyle: always
+
+# Metrics
+Metrics/BlockLength:
+  Max: 25
+  Exclude:
+    - 'test/**/*'
+    - 'spec/**/*'
+
+Metrics/MethodLength:
+  Max: 20
+  Exclude:
+    - 'test/**/*'
+    - 'spec/**/*'
+
+Metrics/ClassLength:
+  Max: 150
+
+# Minitest specific
+Minitest/MultipleAssertions:
+  Max: 10
+
+# Rails specific (for optional Rails integration)
+Rails/ApplicationRecord:
+  Enabled: false  # Not using ActiveRecord
+
+Rails/FilePath:
+  Enabled: false  # Using custom file organization
+
+
+# Performance
+Performance/StringReplacement:
+  Enabled: true
+
+Performance/RedundantMerge:
+  Enabled: true
+
+# Security
+Security/Eval:
+  Enabled: true
+
+Security/JSONLoad:
+  Enabled: true
+
+Security/YAMLLoad:
+  Enabled: true
