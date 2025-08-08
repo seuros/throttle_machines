@@ -10,18 +10,27 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    name: Ruby ${{ matrix.ruby }}
+    name: Rails ${{ matrix.rails }}
     strategy:
       matrix:
-        ruby:
-          - "3.4.4"
+        rails:
+          - "7.2"
+          - "8.0"
 
     steps:
       - uses: actions/checkout@v4
       - name: Set up Ruby
         uses: ruby/setup-ruby@v1
         with:
-          ruby-version: ${{ matrix.ruby }}
-          bundler-cache: true
+          ruby-version: "3.3"
+          bundler-cache: false
+      
+      - name: Install Rails ${{ matrix.rails }}
+        run: |
+          gem install bundler
+          bundle config set --local path 'vendor/bundle'
+          bundle add rails --version "~> ${{ matrix.rails }}.0" --skip-install
+          bundle install
+      
       - name: Run tests
         run: bin/rails test
