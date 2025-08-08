@@ -1,100 +1,19 @@
 # frozen_string_literal: true
 
-require_relative 'base'
-
 module ThrottleMachines
   module Storage
     class Redis < Base
-      GCRA_SCRIPT = <<~LUA
-        local key = KEYS[1]
-        local emission_interval = tonumber(ARGV[1])
-        local delay_tolerance = tonumber(ARGV[2])
-        local ttl = tonumber(ARGV[3])
-        local now = tonumber(ARGV[4])
+      # Load Lua scripts from files
+      LUA_SCRIPTS_DIR = File.expand_path('redis', __dir__)
 
-        local tat = redis.call('GET', key)
-        if not tat then
-          tat = 0
-        else
-          tat = tonumber(tat)
-        end
-
-        tat = math.max(tat, now)
-        local allow = (tat - now) <= delay_tolerance
-
-        if allow then
-          local new_tat = tat + emission_interval
-          redis.call('SET', key, new_tat, 'EX', ttl)
-        end
-
-        return { allow and 1 or 0, tat }
-      LUA
-
-      TOKEN_BUCKET_SCRIPT = <<~LUA
-        local key = KEYS[1]
-        local capacity = tonumber(ARGV[1])
-        local refill_rate = tonumber(ARGV[2])
-        local ttl = tonumber(ARGV[3])
-        local now = tonumber(ARGV[4])
-
-        local bucket = redis.call('HMGET', key, 'tokens', 'last_refill')
-        local tokens = tonumber(bucket[1]) or capacity
-        local last_refill = tonumber(bucket[2]) or now
-
-        -- Refill tokens
-        local elapsed = now - last_refill
-        local tokens_to_add = elapsed * refill_rate
-        tokens = math.min(tokens + tokens_to_add, capacity)
-
-        local allow = tokens >= 1
-        if allow then
-          tokens = tokens - 1
-          redis.call('HMSET', key, 'tokens', tokens, 'last_refill', now)
-          redis.call('EXPIRE', key, ttl)
-        end
-
-        return { allow and 1 or 0, tokens }
-      LUA
-
-      PEEK_GCRA_SCRIPT = <<~LUA
-        local key = KEYS[1]
-        local emission_interval = tonumber(ARGV[1])
-        local delay_tolerance = tonumber(ARGV[2])
-        local now = tonumber(ARGV[3])
-
-        local tat = redis.call('GET', key)
-        if not tat then
-          tat = 0
-        else
-          tat = tonumber(tat)
-        end
-
-        tat = math.max(tat, now)
-        local allow = (tat - now) <= delay_tolerance
-
-        return { allow and 1 or 0, tat }
-      LUA
-
-      PEEK_TOKEN_BUCKET_SCRIPT = <<~LUA
-        local key = KEYS[1]
-        local capacity = tonumber(ARGV[1])
-        local refill_rate = tonumber(ARGV[2])
-        local now = tonumber(ARGV[3])
-
-        local bucket = redis.call('HMGET', key, 'tokens', 'last_refill')
-        local tokens = tonumber(bucket[1]) or capacity
-        local last_refill = tonumber(bucket[2]) or now
-
-        -- Calculate tokens without modifying
-        local elapsed = now - last_refill
-        local tokens_to_add = elapsed * refill_rate
-        tokens = math.min(tokens + tokens_to_add, capacity)
-
-        local allow = tokens >= 1
-        local tokens_after = allow and (tokens - 1) or 0
-
-        return { allow and 1 or 0, tokens_after }
-      LUA
+      GCRA_SCRIPT = File.read(File.join(LUA_SCRIPTS_DIR, 'gcra.lua'))
+      TOKEN_BUCKET_SCRIPT = File.read(File.join(LUA_SCRIPTS_DIR, 'token_bucket.lua'))
+      PEEK_GCRA_SCRIPT = File.read(File.join(LUA_SCRIPTS_DIR, 'peek_gcra.lua'))
+      PEEK_TOKEN_BUCKET_SCRIPT = File.read(File.join(LUA_SCRIPTS_DIR, 'peek_token_bucket.lua'))
+      INCREMENT_COUNTER_SCRIPT = File.read(File.join(LUA_SCRIPTS_DIR, 'increment_counter.lua'))
+      GET_BREAKER_STATE_SCRIPT = File.read(File.join(LUA_SCRIPTS_DIR, 'get_breaker_state.lua'))
+      RECORD_BREAKER_SUCCESS_SCRIPT = File.read(File.join(LUA_SCRIPTS_DIR, 'record_breaker_success.lua'))
+      RECORD_BREAKER_FAILURE_SCRIPT = File.read(File.join(LUA_SCRIPTS_DIR, 'record_breaker_failure.lua'))
 
       def initialize(options = {})
         super
@@ -117,17 +36,7 @@ module ThrottleMachines
 
         # Use Lua script for atomic increment with TTL
         with_redis do |redis|
-          redis.eval(<<~LUA, keys: [window_key], argv: [amount, window.to_i])
-            local count = redis.call('INCRBY', KEYS[1], ARGV[1])
-            local ttl = redis.call('TTL', KEYS[1])
-
-            -- Set expiry if key is new (ttl == -2) or has no TTL (ttl == -1)
-            if ttl <= 0 then
-              redis.call('EXPIRE', KEYS[1], ARGV[2])
-            end
-
-            return count
-          LUA
+          redis.eval(INCREMENT_COUNTER_SCRIPT, keys: [window_key], argv: [amount, window.to_i])
         end
       end
 
@@ -262,31 +171,7 @@ module ThrottleMachines
 
         # Use Lua script for atomic read and potential state transition
         result = with_redis do |redis|
-          redis.eval(<<~LUA, keys: [breaker_key], argv: [current_time])
-            local data = redis.call('HGETALL', KEYS[1])
-            if #data == 0 then
-              return {}
-            end
-
-            local state = {}
-            for i = 1, #data, 2 do
-              state[data[i]] = data[i + 1]
-            end
-
-            -- Auto-transition from open to half-open if timeout passed
-            if state['state'] == 'open' and state['opens_at'] then
-              local now = tonumber(ARGV[1])
-              local opens_at = tonumber(state['opens_at'])
-            #{'  '}
-              if now >= opens_at then
-                redis.call('HSET', KEYS[1], 'state', 'half_open', 'half_open_attempts', '0')
-                state['state'] = 'half_open'
-                state['half_open_attempts'] = '0'
-              end
-            end
-
-            return state
-          LUA
+          redis.eval(GET_BREAKER_STATE_SCRIPT, keys: [breaker_key], argv: [current_time])
         end
 
         return { state: :closed, failures: 0, last_failure: nil } if result.empty?
@@ -309,24 +194,7 @@ module ThrottleMachines
 
         # Use Lua script for atomic success recording
         with_redis do |redis|
-          redis.eval(<<~LUA, keys: [breaker_key], argv: [half_open_requests])
-            local state = redis.call('HGET', KEYS[1], 'state')
-
-            if state == 'half_open' then
-              -- Increment half-open attempts and potentially close the circuit
-              local attempts = redis.call('HINCRBY', KEYS[1], 'half_open_attempts', 1)
-            #{'  '}
-              if attempts >= tonumber(ARGV[1]) then
-                redis.call('DEL', KEYS[1])
-              end
-            elseif state == 'closed' then
-              -- Reset failure count on success in closed state
-              local failures = redis.call('HGET', KEYS[1], 'failures')
-              if failures and tonumber(failures) > 0 then
-                redis.call('HSET', KEYS[1], 'failures', 0)
-              end
-            end
-          LUA
+          redis.eval(RECORD_BREAKER_SUCCESS_SCRIPT, keys: [breaker_key], argv: [half_open_requests])
         end
       end
 
@@ -336,32 +204,7 @@ module ThrottleMachines
 
         # Use Lua script for atomic failure recording
         with_redis do |redis|
-          redis.eval(<<~LUA, keys: [breaker_key], argv: [threshold, timeout, now])
-            local state = redis.call('HGET', KEYS[1], 'state') or 'closed'
-            local now = ARGV[3]
-            local timeout = tonumber(ARGV[2])
-
-            if state == 'half_open' then
-              -- Failure in half-open state, just re-open the circuit
-              redis.call('HMSET', KEYS[1],
-                'state', 'open',
-                'opens_at', tonumber(now) + timeout,
-                'last_failure', now
-              )
-            else -- state is 'closed' or nil
-              local failures = redis.call('HINCRBY', KEYS[1], 'failures', 1)
-              redis.call('HSET', KEYS[1], 'last_failure', now)
-            #{'  '}
-              if failures >= tonumber(ARGV[1]) then
-                redis.call('HMSET', KEYS[1],
-                  'state', 'open',
-                  'opens_at', tonumber(now) + timeout
-                )
-              end
-            end
-
-            redis.call('EXPIRE', KEYS[1], timeout * 2)
-          LUA
+          redis.eval(RECORD_BREAKER_FAILURE_SCRIPT, keys: [breaker_key], argv: [threshold, timeout, now])
         end
 
         get_breaker_state(key)

@@ -5,7 +5,7 @@ module ThrottleMachines
     extend ActiveSupport::Concern
 
     included do
-      if respond_to?(:helper_method)
+      if respond_to?(:helper_method) # No available in API Mode
         helper_method :rate_limited?
         helper_method :rate_limit_remaining
       end

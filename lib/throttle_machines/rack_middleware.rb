@@ -35,9 +35,11 @@ module ThrottleMachines
         @configuration.instance_eval(&) if block
       end
 
+      # rubocop:disable Rails/Delegate -- Ruby 3.4 compatibility issue with delegate
       def reset!
         ThrottleMachines.reset!
       end
+      # rubocop:enable Rails/Delegate
 
       def clear!
         @configuration = Configuration.new
@@ -54,7 +56,7 @@ module ThrottleMachines
 
     # Set defaults
     @enabled = true
-    @notifier = ActiveSupport::Notifications if defined?(ActiveSupport::Notifications)
+    @notifier = ActiveSupport::Notifications
     @configuration = Configuration.new
 
     def initialize(app)
