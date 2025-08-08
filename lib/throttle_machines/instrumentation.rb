@@ -12,11 +12,7 @@ module ThrottleMachines
       end
 
       def backend
-        @backend ||= if defined?(ActiveSupport::Notifications)
-                       ActiveSupport::Notifications
-                     else
-                       NullBackend.new
-                     end
+        @backend ||= ActiveSupport::Notifications
       end
 
       def instrument(event_name, payload = {}, &)

@@ -15,10 +15,8 @@ module ThrottleMachines
 
     initializer 'throttle_machines.configure_defaults' do |_app|
       ThrottleMachines.configure do |config|
-        # Use Redis if available in Rails cache
-        if defined?(Redis) && Rails.cache.respond_to?(:redis)
-          config.store = ThrottleMachines::Stores::Redis.new(Rails.cache.redis)
-        end
+        # Use Rails.cache , user can override
+        config.store = Rails.cache
       end
     end
   end

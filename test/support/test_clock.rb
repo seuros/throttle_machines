@@ -8,7 +8,11 @@ module ThrottleMachines
 
     def initialize(start_time = Time.now.to_f)
       @current_time = start_time
-      
+      @original_method = nil
+
+      # Store original method before overriding
+      @original_method = ThrottleMachines.method(:monotonic_time) if ThrottleMachines.respond_to?(:monotonic_time)
+
       # Override the global monotonic_time method
       ThrottleMachines.singleton_class.define_method(:monotonic_time) do
         @current_time
@@ -33,8 +37,13 @@ module ThrottleMachines
 
     def reset
       # Restore the original monotonic_time method
-      ThrottleMachines.singleton_class.define_method(:monotonic_time) do
-        BreakerMachines.monotonic_time
+      if @original_method
+        ThrottleMachines.singleton_class.define_method(:monotonic_time, @original_method)
+      else
+        # Fallback to Process.clock_gettime
+        ThrottleMachines.singleton_class.define_method(:monotonic_time) do
+          Process.clock_gettime(Process::CLOCK_MONOTONIC)
+        end
       end
     end
   end

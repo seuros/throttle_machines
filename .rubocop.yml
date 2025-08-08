@@ -7,14 +7,18 @@ plugins:
   - rubocop-rake
 
 AllCops:
-  TargetRubyVersion: 3.4
+  TargetRubyVersion: 3.3
   NewCops: enable
   Exclude:
-    - 'vendor/**/*'
-    - 'bin/**/*'
-    - 'tmp/**/*'
-    - 'log/**/*'
-    - 'node_modules/**/*'
+    - "vendor/**/*"
+    - "bin/**/*"
+    - "tmp/**/*"
+    - "log/**/*"
+    - "node_modules/**/*"
+
+# BadCops
+Naming/PredicateMethod:
+  Enabled: false
 
 # Gem-specific settings
 Gemspec/RequiredRubyVersion:
@@ -24,11 +28,11 @@ Gemspec/RequiredRubyVersion:
 Layout/LineLength:
   Max: 120
   AllowedPatterns:
-    - '\A\s*#'  # Allow long comments
-    - '\A\s*raise\s'  # Allow long raise statements
+    - '\A\s*#' # Allow long comments
+    - '\A\s*raise\s' # Allow long raise statements
 
 Style/Documentation:
-  Enabled: false  # Disable for now, enable when documentation is ready
+  Enabled: false # Disable for now, enable when documentation is ready
 
 Style/FrozenStringLiteralComment:
   Enabled: true
@@ -38,14 +42,14 @@ Style/FrozenStringLiteralComment:
 Metrics/BlockLength:
   Max: 25
   Exclude:
-    - 'test/**/*'
-    - 'spec/**/*'
+    - "test/**/*"
+    - "spec/**/*"
 
 Metrics/MethodLength:
   Max: 20
   Exclude:
-    - 'test/**/*'
-    - 'spec/**/*'
+    - "test/**/*"
+    - "spec/**/*"
 
 Metrics/ClassLength:
   Max: 150
@@ -56,11 +60,10 @@ Minitest/MultipleAssertions:
 
 # Rails specific (for optional Rails integration)
 Rails/ApplicationRecord:
-  Enabled: false  # Not using ActiveRecord
+  Enabled: false # Not using ActiveRecord
 
 Rails/FilePath:
-  Enabled: false  # Using custom file organization
-
+  Enabled: false # Using custom file organization
 
 # Performance
 Performance/StringReplacement:

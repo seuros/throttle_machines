@@ -1,7 +1,5 @@
 # frozen_string_literal: true
 
-require_relative 'base'
-
 module ThrottleMachines
   module Storage
     class Null < Base

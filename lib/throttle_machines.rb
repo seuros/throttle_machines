@@ -14,9 +14,6 @@ loader = Zeitwerk::Loader.for_gem
 loader.ignore("#{__dir__}/throttle_machines/engine.rb") unless defined?(Rails::Engine)
 loader.setup
 
-# Load conditional dependencies manually
-require_relative 'throttle_machines/storage/redis' if defined?(Redis)
-
 module ThrottleMachines
   include ActiveSupport::Configurable
 
@@ -132,7 +129,6 @@ module ThrottleMachines
   # Auto-configure with defaults
   configure
 
-  # Backward compatibility aliases for error classes (defined after module setup)
-  CircuitOpenError = BreakerMachines::CircuitOpenError if defined?(BreakerMachines::CircuitOpenError)
-  RetryExhaustedError = ChronoMachines::MaxRetriesExceededError if defined?(ChronoMachines::MaxRetriesExceededError)
+  CircuitOpenError = BreakerMachines::CircuitOpenError
+  RetryExhaustedError = ChronoMachines::MaxRetriesExceededError
 end

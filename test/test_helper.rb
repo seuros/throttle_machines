@@ -9,6 +9,9 @@ require 'minitest/autorun'
 require 'active_support'
 require 'active_support/test_case'
 
+# Load test support files
+require_relative 'support/test_clock'
+
 module ThrottleMachines
   class Test < ActiveSupport::TestCase
     def setup

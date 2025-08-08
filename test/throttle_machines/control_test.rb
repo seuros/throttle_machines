@@ -4,7 +4,6 @@ require 'test_helper'
 
 module ThrottleMachines
   class ControlTest < Test
-
     def test_control_with_all_features
       # Test rate limiting
       control = ThrottleMachines.control('test:rate') do

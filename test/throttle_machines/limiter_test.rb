@@ -4,7 +4,6 @@ require 'test_helper'
 
 module ThrottleMachines
   class LimiterTest < Test
-
     def test_basic_rate_limiting
       limiter = ThrottleMachines.limiter('test', limit: 5, period: 1)
 
