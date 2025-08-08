@@ -922,5 +922,3 @@ May your rate limits be generous, your retries exponential, and your accounts ne
 **P.P.S.** - They say the Encryption Incident never happened. They say ThrottleMachines was never lost. They also said recovery was impossible. They were wrong about that too.
 
 **P.P.P.S.** - This document will self-throttle after 1,000,000 reads. Just kidding. Or am I? Better implement rate limiting just to be safe.
-
-

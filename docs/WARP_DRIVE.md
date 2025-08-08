@@ -363,4 +363,3 @@ end
 **"A ship without proper storage is like a captain without memory - doomed to repeat past mistakes."**
 
 *— Engineering Manual, Warp Core Maintenance*
-

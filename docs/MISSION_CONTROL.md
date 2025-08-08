@@ -248,4 +248,3 @@ Ready for advanced maneuvers?
 **"A smooth launch is the first step to conquering the galaxy."**
 
 *— Academy Training Manual, Chapter 1*
-

@@ -623,5 +623,3 @@ end
 **"In the lab, we break things so they don't break in space."**
 
 *— Chief Science Officer's Testing Manual*
-
-
