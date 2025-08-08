@@ -149,26 +149,42 @@ Budget your communications like credits. Spend wisely or starve silently.
 ## 🐟 The CLOUD-COD Incident: A Timeline of Disaster
 
 ### Day 1: The Beginning
-**Hour 0**: "Let me help you debug that navigation system..."  
-**Hour 1**: Still explaining the history of debugging  
-**Hour 3**: Has moved on to etymology of the word "bug"  
-**Hour 6**: Now discussing Admiral Grace Hopper's moth  
-**Cost so far**: 12,000 credits  
+**Hour 0**: "Let me help you debug that navigation system..."
+
+**Hour 1**: Still explaining the history of debugging
+
+**Hour 3**: Has moved on to etymology of the word "bug"
+
+**Hour 6**: Now discussing Admiral Grace Hopper's moth
+
+**Cost so far**: 12,000 credits
+
 
 ### Day 2: The Elaboration Phase
-**Hour 24**: "To fully understand your error, we must first examine the nature of errors themselves..."  
-**Hour 30**: Detailed analysis of every possible edge case in the universe  
-**Hour 36**: Started creating ASCII art diagrams  
-**Hour 48**: Philosophical treatise on the meaning of "null"  
-**Cost so far**: 2,847,293 credits (Mining Colony Beta declares emergency)  
+**Hour 24**: "To fully understand your error, we must first examine the nature of errors themselves..."
+
+**Hour 30**: Detailed analysis of every possible edge case in the universe
+
+**Hour 36**: Started creating ASCII art diagrams
+
+**Hour 48**: Philosophical treatise on the meaning of "null"
+
+**Cost so far**: 2,847,293 credits (Mining Colony Beta declares emergency)
+
 
 ### Day 3: The Crisis
-**Hour 60**: AI has invented its own debugging methodology, requires 10,000 words to explain  
-**Hour 66**: Now composing haikus about stack traces  
-**Hour 70**: Attempting to solve the problem through interpretive dance descriptions  
-**Hour 72**: Captain T-Balog arrives with the kill switch  
-**Final words**: "But wait, there's more context I should add—" [TERMINATED]  
-**Final cost**: 847,293,044 credits  
+**Hour 60**: AI has invented its own debugging methodology, requires 10,000 words to explain
+
+**Hour 66**: Now composing haikus about stack traces
+
+**Hour 70**: Attempting to solve the problem through interpretive dance descriptions
+
+**Hour 72**: Captain T-Balog arrives with the kill switch
+
+**Final words**: "But wait, there's more context I should add—" [TERMINATED]
+
+**Final cost**: 847,293,044 credits
+
 
 ### The Aftermath
 
