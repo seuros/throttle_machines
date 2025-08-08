@@ -65,21 +65,18 @@ end
 
 ### Fleet-Ready Configuration
 ```ruby
-require 'connection_pool'
 require 'redis'
 
-# Connection pool for multi-threaded operations
-redis_pool = ConnectionPool.new(size: 10, timeout: 5) do
-  Redis.new(
-    url: ENV.fetch('REDIS_URL', 'redis://localhost:6379/0'),
-    timeout: 1,
-    reconnect_attempts: 3,
-    reconnect_delay: 0.2
-  )
-end
+# Redis with connection pooling (built-in with ActiveSupport)
+redis = Redis.new(
+  url: ENV.fetch('REDIS_URL', 'redis://localhost:6379/0'),
+  timeout: 1,
+  reconnect_attempts: 3,
+  reconnect_delay: 0.2
+)
 
 ThrottleMachines.configure do |config|
-  config.storage = ThrottleMachines::Storage::Redis.new(pool: redis_pool)
+  config.storage = ThrottleMachines::Storage::Redis.new(redis: redis)
 end
 ```
 

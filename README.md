@@ -30,7 +30,6 @@ gem 'throttle_machines'
 
 # For warp drive capabilities (Redis storage)
 gem 'redis'
-gem 'connection_pool'
 
 # For planetary Rails integration
 gem 'rails' # or just railties
@@ -54,10 +53,20 @@ torpedo_limiter = ThrottleMachines.limiter("photon_launcher",
   period: 60     # per minute
 )
 
-if torpedo_limiter.allowed?
+# Check and consume approach
+if torpedo_limiter.allow?
+  torpedo_limiter.throttle!  # Consume one torpedo charge
   launch_torpedo!
 else
   puts "Torpedo bay recharging... Please wait."
+end
+
+# OR use the exception approach
+begin
+  torpedo_limiter.throttle!
+  launch_torpedo!
+rescue ThrottleMachines::ThrottledError => e
+  puts "Torpedo bay recharging... Retry after #{e.limiter.retry_after} seconds"
 end
 ```
 
@@ -75,18 +84,15 @@ diplomatic_limiter = ThrottleMachines.limiter("federation_embassy",
 # GCRA ensures smooth traffic - no thundering herds at your space dock!
 ```
 
-### Circuit Breakers - Shield Generators 🛡️
+### Block Form - Fire and Forget 🎯
 
 ```ruby
-# Circuit breakers are like shield generators - they protect your ship
-shields = ThrottleMachines::Breaker.new("warp_core",
-  failure_threshold: 5,  # 5 hits before shields activate
-  timeout: 300          # Shields stay up for 5 minutes
-)
-
-shields.run do
-  engage_warp_drive!  # Protected operation
+# Use the block form for automatic throttling
+# This handles the throttle! and error handling for you
+ThrottleMachines.limit("warp_drive", limit: 5, period: 60) do
+  engage_warp_drive!  # This will be throttled automatically
 end
+# Raises ThrottledError if limit exceeded
 ```
 
 ---
@@ -106,16 +112,15 @@ Like the best spacecraft, ThrottleMachines follows the principle of **ultra-thin
 
 - **🚀 Multiple Algorithms** - GCRA, Token Bucket, Fixed Window, Sliding Window
 - **💫 Distributed Ready** - Redis backend for fleet coordination
-- **🛡️ Circuit Breakers** - Automatic shield activation on system failure
-- **🌊 Cascading Breakers** - Shield cascade protocols for dependent services
 - **🔄 Async Support** - Fiber-safe operations for quantum communications
-- **🎛️ Circuit Groups** - Fleet coordination with dependency management
 - **🏃 Hedged Requests** - Multi-path navigation for reduced latency
 - **🎯 Microsecond Precision** - Navigate the cosmos with temporal accuracy
 - **🔌 Pluggable Storage** - Memory crystals or Redis quantum storage
 - **🌍 Rails Integration** - Seamless planetary docking procedures
 - **📡 Rack Middleware** - Universal translator for all spacecraft
 - **🔍 Full Instrumentation** - Real-time telemetry via ActiveSupport::Notifications
+- **⚡ Thread-Safe** - Safe for multi-threaded spacecraft operations
+- **🎭 Multiple Usage Patterns** - Check-first, exception-based, or block form
 
 ---
 

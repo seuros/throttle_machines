@@ -11,8 +11,7 @@ Welcome aboard, Captain! This guide will have you commanding the ThrottleMachine
 ```ruby
 # Gemfile - Your ship's manifest
 gem 'throttle_machines'
-gem 'redis'           # Optional: For distributed fleet operations
-gem 'connection_pool' # Optional: For multi-threaded missions
+gem 'redis'  # Optional: For distributed fleet operations
 ```
 
 ```bash
@@ -34,9 +33,10 @@ thruster = ThrottleMachines.limiter("main_thruster",
   period: 10   # per 10 seconds
 )
 
-# Fire the thrusters!
+# Fire the thrusters! (Check and consume pattern)
 5.times do
-  if thruster.allowed?
+  if thruster.allow?  # Check if we can fire
+    thruster.throttle!  # Consume one charge
     puts "🔥 Thruster fired!"
   else
     puts "⚠️  Thruster cooling down..."
@@ -44,10 +44,60 @@ thruster = ThrottleMachines.limiter("main_thruster",
 end
 
 # Try one more...
-if thruster.allowed?
+if thruster.allow?
+  thruster.throttle!
   puts "🔥 Thruster fired!"
 else
-  puts "❌ Thruster exhausted! Wait for cooldown."
+  puts "❌ Thruster exhausted! Wait #{thruster.retry_after} seconds for cooldown."
+end
+
+# Alternative: Exception-based pattern
+begin
+  thruster.throttle!
+  puts "🔥 Emergency thruster fired!"
+rescue ThrottleMachines::ThrottledError => e
+  puts "❌ Thruster locked! Retry after #{e.limiter.retry_after} seconds"
+end
+```
+
+---
+
+## ⚡ Understanding the Controls
+
+### The Two Key Methods
+
+**`allow?`** - The Scanner
+- Checks if you have capacity remaining
+- Does NOT consume any of your limit
+- Returns true/false
+- Safe to call multiple times
+
+**`throttle!`** - The Trigger
+- Checks AND consumes one unit from your limit
+- Raises `ThrottledError` if over limit
+- Use this when you actually perform the action
+- Returns nil on success
+
+### Usage Patterns
+
+```ruby
+# Pattern 1: Check first, then consume
+if limiter.allow?
+  limiter.throttle!  # Must consume!
+  perform_action
+end
+
+# Pattern 2: Just throttle (with exceptions)
+begin
+  limiter.throttle!
+  perform_action
+rescue ThrottleMachines::ThrottledError => e
+  handle_rate_limit(e.limiter.retry_after)
+end
+
+# Pattern 3: Block form (automatic)
+ThrottleMachines.limit("action", limit: 10, period: 60) do
+  perform_action  # Automatically throttled
 end
 ```
 
