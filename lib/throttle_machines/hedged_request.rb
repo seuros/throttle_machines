@@ -94,8 +94,8 @@ module ThrottleMachines
     end
 
     # Run async version
-    def run_async(&)
-      Concurrent::Promises.future { run(&) }
+    def run_async(&block)
+      Concurrent::Promises.future { run(&block) }
     end
 
     # Shutdown the executor

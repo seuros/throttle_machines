@@ -2,9 +2,8 @@
 
 module ThrottleMachines
   class Middleware
-    def initialize(app, store: nil, &config_block)
+    def initialize(app, &config_block)
       @app = app
-      @store = store || ThrottleMachines.configuration.store
       @rules = []
 
       instance_eval(&config_block) if config_block

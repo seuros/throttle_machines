@@ -20,18 +20,25 @@ module ThrottleMachines
 
         key = "fail2ban:#{@name}:#{discriminator}"
 
-        # Use circuit breaker to track failures
-        breaker = ThrottleMachines::Breaker.new(
+        # Use a globally managed BreakerMachines circuit as the ban mechanism
+        breaker = BreakerMachines::Registry.instance.get_or_create_dynamic_circuit(
           key,
+          self,
           failure_threshold: @maxretry,
-          timeout: @bantime,
-          storage: ThrottleMachines.storage
+          failure_window: @findtime,
+          reset_timeout: @bantime
         )
 
         # Check if circuit is open (banned)
         if breaker.open?
-          # Get breaker state for instrumentation
-          state = breaker.to_h
+          stats = breaker.stats
+          now = BreakerMachines.monotonic_time
+          time_until_unban = if stats.opened_at
+                               remaining = @bantime - (now - stats.opened_at)
+                               remaining.positive? ? remaining : 0
+                             else
+                               @bantime
+                             end
 
           request.env['rack.attack.matched'] = @name
           request.env['rack.attack.match_type'] = :fail2ban
@@ -41,8 +48,8 @@ module ThrottleMachines
             maxretry: @maxretry,
             findtime: @findtime,
             bantime: @bantime,
-            failures: state[:failure_count],
-            time_until_unban: state[:time_until_retry]
+            failures: stats.failure_count,
+            time_until_unban: time_until_unban
           }
 
           ThrottleMachines::RackMiddleware.instrument(request)
@@ -61,11 +68,12 @@ module ThrottleMachines
         # Use the breaker to record a failure if block returns true
         return unless yield
 
-        breaker = ThrottleMachines::Breaker.new(
+        breaker = BreakerMachines::Registry.instance.get_or_create_dynamic_circuit(
           key,
+          self,
           failure_threshold: @maxretry,
-          timeout: @bantime,
-          storage: ThrottleMachines.storage
+          failure_window: @findtime,
+          reset_timeout: @bantime
         )
 
         # Record failure by trying to call through the breaker

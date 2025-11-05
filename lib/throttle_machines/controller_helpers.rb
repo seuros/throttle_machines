@@ -21,10 +21,10 @@ module ThrottleMachines
       set_rate_limit_headers(limiter)
     end
 
-    def with_throttle(key = nil, limit:, period:, &)
+    def with_throttle(key = nil, limit:, period:, &block)
       key ||= default_throttle_key
 
-      ThrottleMachines.limit(key, limit: limit, period: period, &)
+      ThrottleMachines.limit(key, limit: limit, period: period, &block)
     rescue ThrottledError => e
       render_rate_limited(e.limiter)
     end

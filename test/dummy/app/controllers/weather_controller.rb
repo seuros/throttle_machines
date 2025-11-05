@@ -46,7 +46,7 @@ class WeatherController < ApplicationController
     render json: {
       error: e.message,
       circuit_state: circuit(:weather_api).status_name,
-      failure_count: circuit(:weather_api).failure_count
+      failure_count: circuit(:weather_api).stats.failure_count
     }, status: :service_unavailable
   end
 

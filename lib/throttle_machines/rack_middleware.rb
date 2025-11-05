@@ -30,9 +30,9 @@ module ThrottleMachines
                      :safelists,
                      :blocklists
 
-      def configure(&)
+      def configure(&block)
         @configuration ||= Configuration.new
-        @configuration.instance_eval(&) if block
+        @configuration.instance_eval(&block) if block
       end
 
       # rubocop:disable Rails/Delegate -- Ruby 3.4 compatibility issue with delegate

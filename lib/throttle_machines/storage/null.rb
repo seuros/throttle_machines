@@ -54,27 +54,6 @@ module ThrottleMachines
         }
       end
 
-      # Circuit breaker operations
-      def get_breaker_state(_key)
-        { state: :closed, failures: 0, last_failure: nil }
-      end
-
-      def record_breaker_success(_key, _timeout, _half_open_requests = 1)
-        true
-      end
-
-      def record_breaker_failure(_key, _threshold, _timeout)
-        { state: :closed, failures: 0, last_failure: nil }
-      end
-
-      def trip_breaker(_key, _timeout)
-        true
-      end
-
-      def reset_breaker(_key)
-        true
-      end
-
       # Utility operations
       def clear(_pattern = nil)
         true

@@ -7,11 +7,11 @@ class ExternalApiService
   def initialize
     @payment_breaker = ThrottleMachines::Breaker.new('payment_gateway',
                                                      failure_threshold: 3,
-                                                     timeout: 30)
+                                                     reset_timeout: 30)
 
     @email_breaker = ThrottleMachines::Breaker.new('email_service',
                                                    failure_threshold: 5,
-                                                   timeout: 60)
+                                                   reset_timeout: 60)
 
     # Rate limiters for API calls
     @payment_limiter = ThrottleMachines.limiter('payment_api',
@@ -106,8 +106,8 @@ class ExternalApiService
     {
       payment_gateway: {
         available: !@payment_breaker.open?,
-        state: @payment_breaker.state,
-        failure_count: @payment_breaker.failure_count,
+        state: @payment_breaker.to_h[:state],
+        failure_count: @payment_breaker.stats.failure_count,
         rate_limit: {
           remaining: @payment_limiter.remaining,
           limit: @payment_limiter.limit
@@ -115,8 +115,8 @@ class ExternalApiService
       },
       email_service: {
         available: !@email_breaker.open?,
-        state: @email_breaker.state,
-        failure_count: @email_breaker.failure_count,
+        state: @email_breaker.to_h[:state],
+        failure_count: @email_breaker.stats.failure_count,
         rate_limit: {
           remaining: @email_limiter.remaining,
           limit: @email_limiter.limit

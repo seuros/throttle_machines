@@ -13,11 +13,6 @@ module ThrottleMachines
       end
     end
 
-    initializer 'throttle_machines.configure_defaults' do |_app|
-      ThrottleMachines.configure do |config|
-        # Use Rails.cache , user can override
-        config.store = Rails.cache
-      end
-    end
+    # No default Rails.cache binding; storage is managed by ThrottleMachines
   end
 end

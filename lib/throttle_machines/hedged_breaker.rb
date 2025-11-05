@@ -11,12 +11,12 @@ module ThrottleMachines
       )
     end
 
-    def run(&)
+    def run(&block)
       @hedged.run do |attempt|
         breaker = @breakers[attempt]
         next if breaker.nil?
 
-        breaker.call(&)
+        breaker.call(&block)
       end
     end
   end

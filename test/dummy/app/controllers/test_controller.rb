@@ -42,7 +42,7 @@ class TestController < ApplicationController
     render json: {
       message: 'Attempted to trip payment circuit',
       results: results,
-      circuit_state: service.circuit(:payment_gateway).state
+      circuit_state: service.circuit(:payment_gateway).to_h[:state]
     }
   end
 

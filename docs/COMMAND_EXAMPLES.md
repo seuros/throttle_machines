@@ -193,7 +193,7 @@ class AIThrottleSystem
     @ai_circuit_breaker ||= ThrottleMachines::Breaker.new(
       "openai_api",
       failure_threshold: 3,  # 3 failures
-      timeout: 300,         # 5 minute recovery
+      reset_timeout: 300,    # 5 minute recovery
       storage: ThrottleMachines.configuration.storage
     )
   end
@@ -571,10 +571,10 @@ class GeographicDefenseGrid
       
       {
         region: region,
-        circuit_status: breaker.state,
+      circuit_status: breaker.status_name,
         current_usage: limiter.current_count,
         usage_percentage: (limiter.current_count.to_f / REGIONS[region][:limit] * 100).round(2),
-        healthy: breaker.state == :closed && limiter.current_count < REGIONS[region][:limit] * 0.8
+      healthy: breaker.status_name == :closed && limiter.current_count < REGIONS[region][:limit] * 0.8
       }
     end
   end
@@ -840,7 +840,7 @@ class RealtimeThrottleSystem
       total_connections: Redis.current.keys("connections:*").count,
       connections_by_tier: connection_breakdown,
       message_rate: calculate_message_rate,
-      circuit_status: websocket_circuit_breaker.state,
+      circuit_status: websocket_circuit_breaker.status_name,
       infrastructure_healthy: infrastructure_check
     }
   end
@@ -894,7 +894,7 @@ gcra = ThrottleMachines.limiter("api", limit: 1000, period: 60, algorithm: :gcra
 bucket = ThrottleMachines.limiter("burst", limit: 50, period: 50, algorithm: :token_bucket)
 
 # Circuit breaker for external services
-breaker = ThrottleMachines::Breaker.new("external", failure_threshold: 5, timeout: 300)
+breaker = ThrottleMachines::Breaker.new("external", failure_threshold: 5, reset_timeout: 300)
 
 # Rack middleware - complete defense
 ThrottleMachines::RackMiddleware.throttle("defense", limit: 1000, period: 300) { |r| r.ip }
