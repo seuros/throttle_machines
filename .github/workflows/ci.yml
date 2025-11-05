@@ -12,6 +12,7 @@ jobs:
     runs-on: ubuntu-latest
     name: Rails ${{ matrix.rails }}
     strategy:
+      fail-fast: false
       matrix:
         rails:
           - "8.0"
