@@ -178,9 +178,9 @@ end
 
 ```ruby
 # Combine hedging with circuit breakers
-breaker1 = ThrottleMachines::Breaker.new("backend1", failure_threshold: 3, timeout: 60)
-breaker2 = ThrottleMachines::Breaker.new("backend2", failure_threshold: 3, timeout: 60)
-breaker3 = ThrottleMachines::Breaker.new("backend3", failure_threshold: 3, timeout: 60)
+breaker1 = ThrottleMachines::Breaker.new("backend1", failure_threshold: 3, reset_timeout: 60)
+breaker2 = ThrottleMachines::Breaker.new("backend2", failure_threshold: 3, reset_timeout: 60)
+breaker3 = ThrottleMachines::Breaker.new("backend3", failure_threshold: 3, reset_timeout: 60)
 
 hedged = ThrottleMachines::HedgedBreaker.new([breaker1, breaker2, breaker3])
 

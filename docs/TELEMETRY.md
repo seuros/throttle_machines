@@ -122,8 +122,8 @@ class ThrottleTelemetry
       breakers.map do |name, breaker|
         {
           name: name,
-          state: breaker.state,
-          failure_count: breaker.failure_count,
+          state: breaker.status_name,
+          failure_count: breaker.stats.failure_count,
           last_failure: breaker.last_failure_time,
           opens_count: breaker.total_opens,
           uptime_percentage: calculate_uptime(breaker)
@@ -216,7 +216,7 @@ class TelemetryDashboard
     end
     
     # Check for open circuits
-    open_circuits = ThrottleMachines.breakers.select { |_, b| b.state == :open }
+    open_circuits = ThrottleMachines.breakers.select { |_, b| b.status_name == :open }
     if open_circuits.any?
       alerts << {
         level: "critical",
@@ -242,7 +242,7 @@ class TelemetryDashboard
     score -= [throttle_rate, 30].min
     
     # Deduct for open circuits
-    open_circuits = ThrottleMachines.breakers.count { |_, b| b.state == :open }
+    open_circuits = ThrottleMachines.breakers.count { |_, b| b.status_name == :open }
     score -= (open_circuits * 10)
     
     # Deduct for storage issues
@@ -571,7 +571,7 @@ class ThrottleMachines::PrometheusExporter
     
     # Update circuit breaker metrics
     ThrottleMachines.breakers.each do |name, breaker|
-      state_value = case breaker.state
+      state_value = case breaker.status_name
                     when :closed then 0
                     when :open then 1
                     when :half_open then 2
@@ -642,7 +642,7 @@ class HealthCheckController < ApplicationController
   end
   
   def check_circuit_breakers
-    open_circuits = ThrottleMachines.breakers.select { |_, b| b.state == :open }
+    open_circuits = ThrottleMachines.breakers.select { |_, b| b.status_name == :open }
     
     if open_circuits.empty?
       { status: "healthy", message: "All circuits closed" }

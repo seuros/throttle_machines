@@ -10,7 +10,6 @@ module ThrottleMachines
         @counters = Concurrent::Hash.new
         @gcra_states = Concurrent::Hash.new
         @token_buckets = Concurrent::Hash.new
-        @breaker_states = Concurrent::Hash.new
 
         # Use a striped lock pattern - pool of locks for fine-grained concurrency
         @lock_pool_size = options[:lock_pool_size] || 32
@@ -180,98 +179,7 @@ module ThrottleMachines
         end
       end
 
-      # Circuit breaker operations
-      def get_breaker_state(key)
-        # First try with read lock
-        state = with_read_lock("breaker:#{key}") do
-          @breaker_states[key] || { state: :closed, failures: 0, last_failure: nil }
-        end
-
-        # Check if we need to transition from open to half-open
-        if state[:state] == :open && state[:opens_at] && current_time >= state[:opens_at]
-          # Release read lock and acquire write lock
-          with_write_lock("breaker:#{key}") do
-            # Re-check condition after acquiring write lock
-            current_state = @breaker_states[key]
-            if current_state && current_state[:state] == :open && current_state[:opens_at] && current_time >= current_state[:opens_at]
-              @breaker_states[key] = current_state.merge(
-                state: :half_open,
-                half_open_attempts: 0
-              )
-            end
-            @breaker_states[key] || { state: :closed, failures: 0, last_failure: nil }
-          end
-        else
-          state
-        end
-      end
-
-      def record_breaker_success(key, _timeout, half_open_requests = 1)
-        with_write_lock("breaker:#{key}") do
-          state = @breaker_states[key]
-          return unless state
-
-          case state[:state]
-          when :half_open
-            attempts = (state[:half_open_attempts] || 0) + 1
-            if attempts >= half_open_requests
-              @breaker_states.delete(key)
-            else
-              @breaker_states[key] = state.merge(half_open_attempts: attempts)
-            end
-          when :closed
-            # Reset failure count on success
-            @breaker_states[key] = state.merge(failures: 0) if state[:failures].positive?
-          end
-        end
-      end
-
-      def record_breaker_failure(key, threshold, timeout)
-        with_write_lock("breaker:#{key}") do
-          state = @breaker_states[key] || { state: :closed, failures: 0 }
-          now = current_time
-
-          case state[:state]
-          when :closed
-            failures = state[:failures] + 1
-            @breaker_states[key] = if failures >= threshold
-                                     {
-                                       state: :open,
-                                       failures: failures,
-                                       last_failure: now,
-                                       opens_at: now + timeout
-                                     }
-                                   else
-                                     state.merge(failures: failures, last_failure: now)
-                                   end
-          when :half_open
-            @breaker_states[key] = {
-              state: :open,
-              failures: state[:failures],
-              last_failure: now,
-              opens_at: now + timeout
-            }
-          end
-
-          @breaker_states[key]
-        end
-      end
-
-      def trip_breaker(key, timeout)
-        with_write_lock("breaker:#{key}") do
-          now = current_time
-          @breaker_states[key] = {
-            state: :open,
-            failures: 0,
-            last_failure: now,
-            opens_at: now + timeout
-          }
-        end
-      end
-
-      def reset_breaker(key)
-        with_write_lock("breaker:#{key}") { @breaker_states.delete(key) }
-      end
+      # No circuit breaker operations here: breaker state is owned by BreakerMachines
 
       # Utility operations
       def clear(pattern = nil)
@@ -279,7 +187,7 @@ module ThrottleMachines
           regex = Regexp.new(pattern.gsub('*', '.*'))
 
           # Clear matching keys from all stores
-          [@counters, @gcra_states, @token_buckets, @breaker_states].each do |store|
+          [@counters, @gcra_states, @token_buckets].each do |store|
             store.each_key do |k|
               store.delete(k) if k&.match?(regex)
             end
@@ -288,7 +196,6 @@ module ThrottleMachines
           @counters.clear
           @gcra_states.clear
           @token_buckets.clear
-          @breaker_states.clear
         end
       end
 
@@ -305,12 +212,12 @@ module ThrottleMachines
 
       private
 
-      def with_read_lock(key, &)
-        lock_for(key).with_read_lock(&)
+      def with_read_lock(key, &block)
+        lock_for(key).with_read_lock(&block)
       end
 
-      def with_write_lock(key, &)
-        lock_for(key).with_write_lock(&)
+      def with_write_lock(key, &block)
+        lock_for(key).with_write_lock(&block)
       end
 
       def lock_for(key)
@@ -350,20 +257,7 @@ module ThrottleMachines
           with_write_lock(key) { @token_buckets.delete(key) } if data[:expires_at] && data[:expires_at] <= now
         end
 
-        # Clean closed breaker states and expired open states
-        @breaker_states.each_pair do |key, data|
-          should_delete = false
-
-          # Clean closed states that have been idle
-          should_delete = true if data[:state] == :closed && data[:failures].zero?
-
-          # Clean expired open states (older than 2x timeout)
-          if data[:opens_at] && now > data[:opens_at] + ((data[:opens_at] - (data[:last_failure] || now)) * 2)
-            should_delete = true
-          end
-
-          with_write_lock("breaker:#{key}") { @breaker_states.delete(key) } if should_delete
-        end
+        # No breaker state cleanup: breaker state is managed by BreakerMachines
       rescue StandardError => e
         # Log error but don't crash cleanup thread
         warn "ThrottleMachines: Cleanup error: #{e.message}"

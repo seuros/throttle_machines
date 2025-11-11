@@ -5,6 +5,9 @@ source 'https://rubygems.org'
 # Specify your gem's dependencies in throttle_machines.gemspec.
 gemspec
 
+# Rails version from environment variable (default to 8.1)
+rails_version = ENV['RAILS_VERSION'] || '8.1'
+
 # Local ecosystem dependencies for development
 gem 'activesupport'
 gem 'breaker_machines'
@@ -13,7 +16,7 @@ gem 'minitest'
 gem 'mock_redis', '~> 0.44'
 gem 'pg', '~> 1.5'
 gem 'puma'
-gem 'railties'
+gem 'railties', "~> #{rails_version}.0"
 gem 'rake'
 gem 'rubocop'
 gem 'rubocop-minitest'

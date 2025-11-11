@@ -11,9 +11,7 @@ module ThrottleMachines
       PEEK_GCRA_SCRIPT = File.read(File.join(LUA_SCRIPTS_DIR, 'peek_gcra.lua'))
       PEEK_TOKEN_BUCKET_SCRIPT = File.read(File.join(LUA_SCRIPTS_DIR, 'peek_token_bucket.lua'))
       INCREMENT_COUNTER_SCRIPT = File.read(File.join(LUA_SCRIPTS_DIR, 'increment_counter.lua'))
-      GET_BREAKER_STATE_SCRIPT = File.read(File.join(LUA_SCRIPTS_DIR, 'get_breaker_state.lua'))
-      RECORD_BREAKER_SUCCESS_SCRIPT = File.read(File.join(LUA_SCRIPTS_DIR, 'record_breaker_success.lua'))
-      RECORD_BREAKER_FAILURE_SCRIPT = File.read(File.join(LUA_SCRIPTS_DIR, 'record_breaker_failure.lua'))
+      # Breaker scripts removed: breaker state is owned by BreakerMachines
 
       def initialize(options = {})
         super
@@ -165,68 +163,7 @@ module ThrottleMachines
         retry
       end
 
-      # Circuit breaker operations
-      def get_breaker_state(key)
-        breaker_key = prefixed("breaker:#{key}")
-
-        # Use Lua script for atomic read and potential state transition
-        result = with_redis do |redis|
-          redis.eval(GET_BREAKER_STATE_SCRIPT, keys: [breaker_key], argv: [current_time])
-        end
-
-        return { state: :closed, failures: 0, last_failure: nil } if result.empty?
-
-        # Convert hash from Lua to Ruby format
-        state = {}
-        result.each_slice(2) { |k, v| state[k] = v }
-
-        {
-          state: state['state'].to_sym,
-          failures: state['failures'].to_i,
-          last_failure: state['last_failure']&.to_f,
-          opens_at: state['opens_at']&.to_f,
-          half_open_attempts: state['half_open_attempts']&.to_i
-        }
-      end
-
-      def record_breaker_success(key, _timeout, half_open_requests = 1)
-        breaker_key = prefixed("breaker:#{key}")
-
-        # Use Lua script for atomic success recording
-        with_redis do |redis|
-          redis.eval(RECORD_BREAKER_SUCCESS_SCRIPT, keys: [breaker_key], argv: [half_open_requests])
-        end
-      end
-
-      def record_breaker_failure(key, threshold, timeout)
-        breaker_key = prefixed("breaker:#{key}")
-        now = current_time
-
-        # Use Lua script for atomic failure recording
-        with_redis do |redis|
-          redis.eval(RECORD_BREAKER_FAILURE_SCRIPT, keys: [breaker_key], argv: [threshold, timeout, now])
-        end
-
-        get_breaker_state(key)
-      end
-
-      def trip_breaker(key, timeout)
-        breaker_key = prefixed("breaker:#{key}")
-        now = current_time
-
-        with_redis do |redis|
-          redis.hmset(breaker_key,
-                      'state', 'open',
-                      'failures', 0,
-                      'last_failure', now,
-                      'opens_at', now + timeout)
-          redis.expire(breaker_key, (timeout * 2).to_i)
-        end
-      end
-
-      def reset_breaker(key)
-        with_redis { |r| r.del(prefixed("breaker:#{key}")) }
-      end
+      # No circuit breaker operations: breaker state is owned by BreakerMachines
 
       # Utility operations
       def clear(pattern = nil)
@@ -280,13 +217,13 @@ module ThrottleMachines
         raise ArgumentError, "Invalid Redis connection: #{e.message}"
       end
 
-      def with_redis(&)
+      def with_redis(&block)
         if @redis.respond_to?(:with)
           # Connection pool
-          @redis.with(&)
+          @redis.with(&block)
         else
           # Regular Redis client
-          yield @redis
+          block.call(@redis)
         end
       end
     end

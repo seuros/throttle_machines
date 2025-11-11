@@ -3,7 +3,7 @@
 require 'json'
 require 'timeout'
 require 'zeitwerk'
-require 'active_support/configurable'
+require 'active_support/core_ext/class/attribute'
 
 # Ecosystem dependencies
 require 'chrono_machines'
@@ -15,20 +15,30 @@ loader.ignore("#{__dir__}/throttle_machines/engine.rb") unless defined?(Rails::E
 loader.setup
 
 module ThrottleMachines
-  include ActiveSupport::Configurable
+  class Configuration
+    attr_accessor :default_limit, :default_period, :default_storage, :clock,
+                  :instrumentation_enabled, :instrumentation_backend, :_storage_instance
 
-  # Define configuration options with defaults
-  config_accessor :default_limit, default: 100
-  config_accessor :default_period, default: 60 # 1 minute
-  config_accessor :default_storage, default: :memory
-  config_accessor :clock, default: nil
-  config_accessor :instrumentation_enabled, default: true
-  config_accessor :instrumentation_backend
-  config_accessor :_storage_instance
+    def initialize
+      @default_limit = 100
+      @default_period = 60 # 1 minute
+      @default_storage = :memory
+      @clock = nil
+      @instrumentation_enabled = true
+      @instrumentation_backend = nil
+      @_storage_instance = nil
+    end
+  end
+
+  @config = Configuration.new
 
   class << self
     # Delegate monotonic time to BreakerMachines for consistency
     delegate :monotonic_time, to: :BreakerMachines
+
+    def config
+      @config
+    end
 
     def configure
       yield(config) if block_given?
@@ -65,28 +75,28 @@ module ThrottleMachines
       control
     end
 
-    def limit(key, limit:, period:, algorithm: :fixed_window, &)
+    def limit(key, limit:, period:, algorithm: :fixed_window, &block)
       limiter = limiter(key, limit: limit, period: period, algorithm: algorithm)
-      limiter.throttle!(&)
+      limiter.throttle!(&block)
     end
 
-    def break_circuit(key, failures:, timeout:, &)
-      # Delegate to breaker_machines
+    def break_circuit(key, failures:, timeout:, &block)
+      # Delegate to BreakerMachines; use reset_timeout for open duration
       breaker = BreakerMachines::Circuit.new(
-        key: key,
+        key,
         failure_threshold: failures,
-        timeout: timeout
+        reset_timeout: timeout
       )
-      breaker.call(&)
+      breaker.call(&block)
     end
 
-    def retry_with(max_attempts: 3, backoff: :exponential, &)
+    def retry_with(max_attempts: 3, backoff: :exponential, &block)
       # Delegate to chrono_machines
       policy_options = {
         max_attempts: max_attempts,
         jitter_factor: backoff == :exponential ? 1.0 : 0.0
       }
-      ChronoMachines.retry(policy_options, &)
+      ChronoMachines.retry(policy_options, &block)
     end
 
     def limiter(key, limit:, period:, algorithm: :fixed_window)
@@ -131,4 +141,7 @@ module ThrottleMachines
 
   CircuitOpenError = BreakerMachines::CircuitOpenError
   RetryExhaustedError = ChronoMachines::MaxRetriesExceededError
+
+  # Back-compat wrapper: use BreakerMachines as the circuit implementation
+  Breaker = BreakerMachines::Circuit
 end

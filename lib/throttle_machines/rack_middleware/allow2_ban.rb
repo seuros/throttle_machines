@@ -34,12 +34,18 @@ module ThrottleMachines
 
         # Check if we've had enough successful requests
         if success_limiter.remaining.zero?
-          # Reset the fail2ban breaker
-          storage = ThrottleMachines.storage
-          storage.reset_breaker(fail_key)
+          # Reset the fail2ban breaker (use BreakerMachines circuit)
+          breaker = BreakerMachines::Registry.instance.get_or_create_dynamic_circuit(
+            fail_key,
+            self,
+            failure_threshold: @maxretry,
+            failure_window: @findtime,
+            reset_timeout: @bantime
+          )
+          breaker.hard_reset
 
           # Reset our own counter
-          storage.reset_counter(success_key, @findtime)
+          ThrottleMachines.storage.reset_counter(success_key, @findtime)
         else
           # Increment success counter
           begin

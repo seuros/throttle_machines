@@ -32,27 +32,27 @@ module ThrottleMachines
       end
 
       # DSL Methods
-      def throttle(name, options = {}, &)
-        @throttles[name] = Throttle.new(name, options, &)
+      def throttle(name, options = {}, &block)
+        @throttles[name] = Throttle.new(name, options, &block)
       end
 
-      def track(name, options = {}, &)
-        @tracks[name] = Track.new(name, options, &)
+      def track(name, options = {}, &block)
+        @tracks[name] = Track.new(name, options, &block)
       end
 
-      def safelist(name = nil, &)
+      def safelist(name = nil, &block)
         if name
-          @safelists[name] = Safelist.new(name, &)
+          @safelists[name] = Safelist.new(name, &block)
         else
-          @anonymous_safelists << Safelist.new(nil, &)
+          @anonymous_safelists << Safelist.new(nil, &block)
         end
       end
 
-      def blocklist(name = nil, &)
+      def blocklist(name = nil, &block)
         if name
-          @blocklists[name] = Blocklist.new(name, &)
+          @blocklists[name] = Blocklist.new(name, &block)
         else
-          @anonymous_blocklists << Blocklist.new(nil, &)
+          @anonymous_blocklists << Blocklist.new(nil, &block)
         end
       end
 
@@ -64,12 +64,12 @@ module ThrottleMachines
         @anonymous_blocklists << Blocklist.new(nil) { |req| req.ip == ip_address }
       end
 
-      def fail2ban(name, options = {}, &)
-        @fail2bans[name] = Fail2Ban.new(name, options, &)
+      def fail2ban(name, options = {}, &block)
+        @fail2bans[name] = Fail2Ban.new(name, options, &block)
       end
 
-      def allow2ban(name, options = {}, &)
-        @allow2bans[name] = Allow2Ban.new(name, options, &)
+      def allow2ban(name, options = {}, &block)
+        @allow2bans[name] = Allow2Ban.new(name, options, &block)
       end
 
       # Check methods

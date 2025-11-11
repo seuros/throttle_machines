@@ -2,6 +2,9 @@
 
 source 'https://rubygems.org'
 
+# Rails version from environment variable (default to 8.1)
+rails_version = ENV['RAILS_VERSION'] || '8.1'
+
 # Use the parent gem
 gem 'throttle_machines', path: '../..'
 
@@ -9,7 +12,7 @@ gem 'throttle_machines', path: '../..'
 gem 'puma', '~> 6.0'
 
 # Rails
-gem 'rails', '~> 7.2'
+gem 'rails', "~> #{rails_version}.0"
 
 # Database
 gem 'pg', '~> 1.5'

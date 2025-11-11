@@ -2,12 +2,12 @@
 
 ENV['RAILS_ENV'] = 'test'
 
-$LOAD_PATH.unshift File.expand_path('../lib', __dir__)
-require 'throttle_machines'
-
 require 'minitest/autorun'
 require 'active_support'
 require 'active_support/test_case'
+
+$LOAD_PATH.unshift File.expand_path('../lib', __dir__)
+require 'throttle_machines'
 
 # Load test support files
 require_relative 'support/test_clock'

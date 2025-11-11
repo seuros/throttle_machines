@@ -15,7 +15,7 @@ module ThrottleMachines
         @backend ||= ActiveSupport::Notifications
       end
 
-      def instrument(event_name, payload = {}, &)
+      def instrument(event_name, payload = {}, &block)
         if !enabled || backend.nil?
           return yield if block_given?
 
@@ -23,7 +23,7 @@ module ThrottleMachines
         end
 
         full_event_name = "#{event_name}.throttle_machines"
-        backend.instrument(full_event_name, payload, &)
+        backend.instrument(full_event_name, payload, &block)
       end
 
       # Convenience methods for common events
@@ -66,9 +66,9 @@ module ThrottleMachines
       # Circuit breaker events
       def circuit_opened(breaker, failure_count:)
         payload = {
-          key: breaker.key,
-          failure_threshold: breaker.failure_threshold,
-          timeout: breaker.timeout,
+          key: (breaker.respond_to?(:name) ? breaker.name : breaker.to_s),
+          failure_threshold: (breaker.respond_to?(:configuration) ? breaker.configuration[:failure_threshold] : nil),
+          timeout: (breaker.respond_to?(:configuration) ? breaker.configuration[:reset_timeout] : nil),
           failure_count: failure_count
         }
         instrument('circuit_breaker.opened', payload)
@@ -76,35 +76,35 @@ module ThrottleMachines
 
       def circuit_closed(breaker)
         payload = {
-          key: breaker.key,
-          failure_threshold: breaker.failure_threshold,
-          timeout: breaker.timeout
+          key: (breaker.respond_to?(:name) ? breaker.name : breaker.to_s),
+          failure_threshold: (breaker.respond_to?(:configuration) ? breaker.configuration[:failure_threshold] : nil),
+          timeout: (breaker.respond_to?(:configuration) ? breaker.configuration[:reset_timeout] : nil)
         }
         instrument('circuit_breaker.closed', payload)
       end
 
       def circuit_half_opened(breaker)
         payload = {
-          key: breaker.key,
-          failure_threshold: breaker.failure_threshold,
-          timeout: breaker.timeout,
-          half_open_requests: breaker.half_open_requests
+          key: (breaker.respond_to?(:name) ? breaker.name : breaker.to_s),
+          failure_threshold: (breaker.respond_to?(:configuration) ? breaker.configuration[:failure_threshold] : nil),
+          timeout: (breaker.respond_to?(:configuration) ? breaker.configuration[:reset_timeout] : nil),
+          half_open_requests: (breaker.respond_to?(:configuration) ? breaker.configuration[:half_open_calls] : nil)
         }
         instrument('circuit_breaker.half_opened', payload)
       end
 
       def circuit_success(breaker)
         payload = {
-          key: breaker.key,
-          state: breaker.state
+          key: (breaker.respond_to?(:name) ? breaker.name : breaker.to_s),
+          state: (breaker.respond_to?(:to_h) ? breaker.to_h[:state] : nil)
         }
         instrument('circuit_breaker.success', payload)
       end
 
       def circuit_failure(breaker, error: nil)
         payload = {
-          key: breaker.key,
-          state: breaker.state,
+          key: (breaker.respond_to?(:name) ? breaker.name : breaker.to_s),
+          state: (breaker.respond_to?(:to_h) ? breaker.to_h[:state] : nil),
           error_class: error&.class&.name,
           error_message: error&.message
         }
@@ -113,9 +113,9 @@ module ThrottleMachines
 
       def circuit_rejected(breaker)
         payload = {
-          key: breaker.key,
-          failure_threshold: breaker.failure_threshold,
-          timeout: breaker.timeout
+          key: (breaker.respond_to?(:name) ? breaker.name : breaker.to_s),
+          failure_threshold: (breaker.respond_to?(:configuration) ? breaker.configuration[:failure_threshold] : nil),
+          timeout: (breaker.respond_to?(:configuration) ? breaker.configuration[:reset_timeout] : nil)
         }
         instrument('circuit_breaker.rejected', payload)
       end

@@ -151,7 +151,7 @@ class ShieldSystemTest < ThrottleTest
     super
     @shields = ThrottleMachines::Breaker.new("test_shields",
       failure_threshold: 3,
-      timeout: 10,
+      reset_timeout: 10,
       storage: ThrottleMachines.configuration.storage
     )
   end
@@ -224,9 +224,9 @@ end
 class AdvancedShieldTest < ThrottleTest
   def test_cascading_shields
     primary = ThrottleMachines::Breaker.new("primary", 
-      failure_threshold: 5, timeout: 10)
+      failure_threshold: 5, reset_timeout: 10)
     secondary = ThrottleMachines::Breaker.new("secondary", 
-      failure_threshold: 3, timeout: 20)
+      failure_threshold: 3, reset_timeout: 20)
     
     defense_system = CascadingDefense.new(primary, secondary)
     
@@ -424,12 +424,12 @@ module ThrottleAssertions
   end
   
   def assert_circuit_open(breaker, message = nil)
-    assert_equal :open, breaker.state,
+    assert_equal :open, breaker.status_name,
       message || "Expected circuit to be open"
   end
   
   def assert_circuit_closed(breaker, message = nil)
-    assert_equal :closed, breaker.state,
+    assert_equal :closed, breaker.status_name,
       message || "Expected circuit to be closed"
   end
 end

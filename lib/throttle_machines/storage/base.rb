@@ -42,27 +42,6 @@ module ThrottleMachines
         raise NotImplementedError
       end
 
-      # Circuit breaker operations
-      def get_breaker_state(key)
-        raise NotImplementedError
-      end
-
-      def record_breaker_success(key, timeout, half_open_requests = 1)
-        raise NotImplementedError
-      end
-
-      def record_breaker_failure(key, threshold, timeout)
-        raise NotImplementedError
-      end
-
-      def trip_breaker(key, timeout)
-        raise NotImplementedError
-      end
-
-      def reset_breaker(key)
-        raise NotImplementedError
-      end
-
       # Utility operations
       def clear(pattern = nil)
         raise NotImplementedError
@@ -72,8 +51,8 @@ module ThrottleMachines
         raise NotImplementedError
       end
 
-      def with_timeout(timeout, &)
-        Timeout.timeout(timeout, &)
+      def with_timeout(timeout, &block)
+        Timeout.timeout(timeout, &block)
       rescue Timeout::Error
         nil
       end

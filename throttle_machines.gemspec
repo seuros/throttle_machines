@@ -21,13 +21,13 @@ Gem::Specification.new do |spec|
     Dir['{app,config,db,lib}/**/*', 'LICENSE', 'Rakefile', 'README.md']
   end
 
-  spec.add_dependency 'activesupport', '>= 7.0'
+  spec.add_dependency 'activesupport', '>= 8.0.4'
   spec.add_dependency 'concurrent-ruby', '~> 1.3'
   spec.add_dependency 'rack', '~> 3.0'
   spec.add_dependency 'zeitwerk', '~> 2.7'
 
-  # Ecosystem dependencies for retry and circuit breaker functionality
-  spec.add_dependency 'breaker_machines', '~> 0.4'
+  # Ecosystem dependencies - require Rails 8.0.4+ compatible versions
+  spec.add_dependency 'breaker_machines', '~> 0.7'
   spec.add_dependency 'chrono_machines', '>= 0.2'
 
   spec.required_ruby_version = '>= 3.3.0'

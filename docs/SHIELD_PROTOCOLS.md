@@ -47,7 +47,7 @@ require 'throttle_machines'
 # Create a basic shield system
 shields = ThrottleMachines::Breaker.new("warp_core_shields",
   failure_threshold: 5,    # 5 hits before shields activate
-  timeout: 300,           # Shields stay up for 5 minutes
+  reset_timeout: 300,      # Shields stay up for 5 minutes
   storage: ThrottleMachines.configuration.storage
 )
 
@@ -73,7 +73,7 @@ class ExternalAPIShield
     @shields = ThrottleMachines::Breaker.new(
       "api_shield_#{api_name}",
       failure_threshold: 3,    # 3 strikes
-      timeout: 60,            # 1 minute cooldown
+      reset_timeout: 60,       # 1 minute cooldown
       storage: ThrottleMachines.configuration.storage
     )
   end
@@ -122,7 +122,7 @@ class DatabaseShield
     @shields = ThrottleMachines::Breaker.new(
       "database_shields",
       failure_threshold: 5,
-      timeout: 30,  # Quick recovery for databases
+      reset_timeout: 30,  # Quick recovery for databases
       storage: ThrottleMachines.configuration.storage
     )
   end
@@ -163,19 +163,19 @@ class CascadingDefenseSystem
     @primary_shield = ThrottleMachines::Breaker.new(
       "primary_shield",
       failure_threshold: 10,
-      timeout: 60
+      reset_timeout: 60
     )
     
     @secondary_shield = ThrottleMachines::Breaker.new(
       "secondary_shield", 
       failure_threshold: 5,
-      timeout: 300  # Longer recovery time
+      reset_timeout: 300  # Longer recovery time
     )
     
     @emergency_shield = ThrottleMachines::Breaker.new(
       "emergency_shield",
       failure_threshold: 3,
-      timeout: 600  # 10 minute lockdown
+      reset_timeout: 600  # 10 minute lockdown
     )
   end
   
@@ -225,7 +225,7 @@ class AdaptiveShield
     ThrottleMachines::Breaker.new(
       "adaptive_shield_#{@service_name}",
       failure_threshold: threshold,
-      timeout: calculate_recovery_time,
+      reset_timeout: calculate_recovery_time,
       storage: ThrottleMachines.configuration.storage
     )
   end
@@ -362,8 +362,8 @@ class ShieldControl
   # Shield status report
   def status
     {
-      state: @breaker.state,
-      failures: @breaker.failure_count,
+      state: @breaker.status_name,
+      failures: @breaker.stats.failure_count,
       last_failure: @breaker.last_failure_time,
       auto_reset_at: @breaker.reset_at,
       health: calculate_shield_health
@@ -374,14 +374,14 @@ class ShieldControl
   
   def safe_to_lower?
     # Check if it's safe to lower shields
-    recent_failures = @breaker.failure_count
+    recent_failures = @breaker.stats.failure_count
     time_since_failure = Time.current - (@breaker.last_failure_time || 1.hour.ago)
     
     recent_failures < 2 && time_since_failure > 5.minutes
   end
   
   def calculate_shield_health
-    case @breaker.state
+    case @breaker.status_name
     when :closed
       "100% - All systems operational"
     when :open
@@ -412,7 +412,7 @@ class PaymentShield
     @shield = ThrottleMachines::Breaker.new(
       "payment_processor",
       failure_threshold: 3,    # Very sensitive
-      timeout: 1800,          # 30 minutes - payment systems need time
+      reset_timeout: 1800,     # 30 minutes - payment systems need time
       storage: ThrottleMachines.configuration.storage
     )
   end
@@ -451,7 +451,7 @@ class AIServiceShield
     @shield = ThrottleMachines::Breaker.new(
       "ai_service",
       failure_threshold: 5,
-      timeout: 120,  # Quick recovery for AI services
+      reset_timeout: 120,  # Quick recovery for AI services
       storage: ThrottleMachines.configuration.storage
     )
     
@@ -507,7 +507,7 @@ class ShieldAnalytics
     breaker = ThrottleMachines.breakers[breaker_name]
     
     {
-      current_state: breaker.state,
+      current_state: breaker.status_name,
       uptime_percentage: calculate_uptime(breaker),
       failure_rate: calculate_failure_rate(breaker),
       mttr: mean_time_to_recovery(breaker),
