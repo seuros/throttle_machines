@@ -37,5 +37,5 @@ Gem::Specification.new do |spec|
   spec.add_dependency 'breaker_machines', '~> 0.7'
   spec.add_dependency 'chrono_machines', '>= 0.2'
 
-  spec.required_ruby_version = '>= 3.4.0'
+  spec.required_ruby_version = '>= 3.3.0'
 end
