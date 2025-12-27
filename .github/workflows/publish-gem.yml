@@ -1,0 +1,258 @@
+name: Publish to GitHub Packages
+
+on:
+  push:
+    tags:
+      - 'v*'
+      - 'throttle_machines/v*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build-ruby-gem:
+    runs-on: ubuntu-latest
+    outputs:
+      gem_version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.4'
+          bundler-cache: true
+
+      - name: Get version
+        id: version
+        run: |
+          VERSION=$(ruby -e "require './lib/throttle_machines/version'; puts ThrottleMachines::VERSION")
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Building version: ${VERSION}"
+
+      - name: Build gem (pure Ruby)
+        env:
+          GEM_PUSH_HOST: https://rubygems.pkg.github.com/${{ github.repository_owner }}
+        run: gem build throttle_machines.gemspec
+
+      - name: Upload gem artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ruby-gem
+          path: '*.gem'
+          if-no-files-found: error
+
+  build-native-gems:
+    runs-on: ubuntu-latest
+    needs: build-ruby-gem
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - arm64-darwin
+          - x86_64-darwin
+          - x86_64-linux
+          - x86_64-linux-musl
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Configure gem installation directory
+        run: |
+          GEM_HOME="$HOME/.gem"
+          mkdir -p "$GEM_HOME/bin"
+          echo "GEM_HOME=$GEM_HOME" >> "$GITHUB_ENV"
+          echo "GEM_PATH=$GEM_HOME" >> "$GITHUB_ENV"
+          echo "$GEM_HOME/bin" >> "$GITHUB_PATH"
+
+      - name: Cross-compile native gem
+        id: cross
+        uses: oxidize-rb/actions/cross-gem@v1
+        env:
+          GEM_PUSH_HOST: https://rubygems.pkg.github.com/${{ github.repository_owner }}
+        with:
+          platform: ${{ matrix.platform }}
+          ruby-versions: '3.4, 4.0'
+
+      - name: Upload platform gem artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-gem-${{ matrix.platform }}
+          path: ${{ steps.cross.outputs.gem-path }}
+          if-no-files-found: error
+
+  smoke-test:
+    runs-on: ubuntu-latest
+    needs:
+      - build-ruby-gem
+      - build-native-gems
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - x86_64-linux
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: native-gem-${{ matrix.platform }}
+          path: gems
+
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.4'
+
+      - name: Install dependencies
+        run: |
+          gem install zeitwerk -v "~> 2.7" --no-document
+          gem install activesupport -v ">= 8.0" --no-document
+          gem install concurrent-ruby -v "~> 1.3" --no-document
+          gem install rack -v "~> 3.0" --no-document
+          gem install breaker_machines -v "~> 0.7" --no-document
+          gem install chrono_machines -v ">= 0.2" --no-document
+
+      - name: Test gem installation
+        run: |
+          GEM_FILE=$(ls gems/*.gem)
+          echo "Testing installation of: $GEM_FILE"
+          gem install "$GEM_FILE" --ignore-dependencies --no-document
+
+      - name: Verify native extension loaded
+        run: |
+          ruby -e "
+            require 'throttle_machines'
+            puts 'Gem loaded successfully'
+            begin
+              require 'throttle_machines_native'
+              puts 'Native backend available'
+            rescue LoadError
+              puts 'Native backend not available (fallback to pure Ruby)'
+            end
+          "
+
+  smoke-test-musl:
+    runs-on: ubuntu-latest
+    needs:
+      - build-ruby-gem
+      - build-native-gems
+    continue-on-error: true
+    container:
+      image: ruby:3.4-alpine
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: native-gem-x86_64-linux-musl
+          path: gems
+
+      - name: Install dependencies on Alpine
+        run: |
+          gem install zeitwerk -v "~> 2.7" --no-document
+          gem install activesupport -v ">= 8.0" --no-document
+          gem install concurrent-ruby -v "~> 1.3" --no-document
+          gem install rack -v "~> 3.0" --no-document
+          gem install breaker_machines -v "~> 0.7" --no-document
+          gem install chrono_machines -v ">= 0.2" --no-document
+
+      - name: Test gem installation on Alpine
+        run: |
+          GEM_FILE=$(ls gems/*.gem)
+          echo "Testing musl gem on Alpine: $GEM_FILE"
+          gem install "$GEM_FILE" --ignore-dependencies --no-document
+
+      - name: Verify native extension loaded
+        run: |
+          ruby -e "
+            require 'throttle_machines'
+            puts 'Gem loaded successfully on Alpine (musl)'
+            begin
+              require 'throttle_machines_native'
+              puts 'Native musl backend loaded successfully'
+            rescue LoadError => e
+              puts 'ERROR: Native backend failed to load on musl'
+              puts e.message
+              exit 1
+            end
+          "
+
+  publish-to-github-packages:
+    needs:
+      - build-ruby-gem
+      - build-native-gems
+      - smoke-test
+      - smoke-test-musl
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.4'
+
+      - name: Download all gem artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: List all artifacts
+        run: |
+          echo "=== All artifacts ==="
+          find artifacts -name "*.gem" -type f
+          echo ""
+          echo "=== Gem details ==="
+          find artifacts -name "*.gem" -type f -exec ls -lh {} \;
+
+      - name: Setup gem credentials
+        run: |
+          mkdir -p ~/.gem
+          cat << EOF > ~/.gem/credentials
+          ---
+          :github: Bearer ${{ secrets.GITHUB_TOKEN }}
+          EOF
+          chmod 0600 ~/.gem/credentials
+
+      - name: Publish gems to GitHub Packages
+        run: |
+          OWNER="${{ github.repository_owner }}"
+          HOST="https://rubygems.pkg.github.com/${OWNER}"
+
+          echo "Publishing to: ${HOST}"
+
+          for gem in artifacts/**/*.gem; do
+            echo ""
+            echo "Processing: $gem"
+            gem push --key github --host "${HOST}" "$gem" 2>&1 | tee /tmp/push.log
+            EXIT_CODE=$?
+
+            if [ $EXIT_CODE -eq 0 ]; then
+              echo "✓ Successfully pushed $gem"
+            elif grep -q "already been pushed" /tmp/push.log; then
+              echo "⊘ Skipping $gem (already published)"
+            else
+              echo "✗ Failed to push $gem"
+              cat /tmp/push.log
+              exit 1
+            fi
+          done
+
+      - name: Cleanup credentials
+        if: always()
+        run: rm -f ~/.gem/credentials
+
+  summary:
+    needs:
+      - build-ruby-gem
+      - build-native-gems
+      - smoke-test
+      - smoke-test-musl
+      - publish-to-github-packages
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Build Summary
+        run: |
+          echo "## Multi-Architecture Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Version:** ${{ needs.build-ruby-gem.outputs.gem_version }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Platforms:** arm64-darwin, x86_64-darwin, x86_64-linux, x86_64-linux-musl" >> $GITHUB_STEP_SUMMARY
+          echo "**Ruby Versions:** 3.4, 4.0" >> $GITHUB_STEP_SUMMARY
