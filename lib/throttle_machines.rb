@@ -145,3 +145,20 @@ module ThrottleMachines
   # Back-compat wrapper: use BreakerMachines as the circuit implementation
   Breaker = BreakerMachines::Circuit
 end
+
+# Optional speedups (order matters: most specific first)
+# These are loaded after Zeitwerk setup to allow graceful fallback.
+
+# Native Rust extension for performance-critical algorithms
+begin
+  require_relative "throttle_machines/native_speedup"
+rescue LoadError
+  # Native extension not available, pure Ruby will be used
+end
+
+# Async/Fiber support when Async gem is loaded
+begin
+  require_relative "throttle_machines/async_support"
+rescue LoadError
+  # Async gem not available
+end

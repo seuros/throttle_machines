@@ -1,0 +1,6 @@
+[workspace]
+members = ["ext/throttle_machines_native/core", "ext/throttle_machines_native/ffi"]
+resolver = "2"
+
+[workspace.dependencies]
+throttle-machines = { path = "./ext/throttle_machines_native/core" }

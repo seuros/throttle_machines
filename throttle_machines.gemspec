@@ -18,7 +18,14 @@ Gem::Specification.new do |spec|
   spec.metadata['rubygems_mfa_required'] = 'true'
 
   spec.files = Dir.chdir(File.expand_path(__dir__)) do
-    Dir['{app,config,db,lib}/**/*', 'LICENSE', 'Rakefile', 'README.md']
+    Dir['{app,config,db,lib}/**/*', 'LICENSE', 'Rakefile', 'README.md', 'Cargo.toml'] +
+      Dir['ext/**/*.{rb,rs,toml,md,lock}']
+  end
+
+  # Native extension (optional - falls back to pure Ruby if not available)
+  # Only include extension for CRuby (not JRuby/TruffleRuby)
+  unless RUBY_ENGINE == 'jruby' || RUBY_ENGINE == 'truffleruby'
+    spec.extensions = ['ext/throttle_machines_native/extconf.rb']
   end
 
   spec.add_dependency 'activesupport', '>= 8.0.4'
@@ -27,7 +34,7 @@ Gem::Specification.new do |spec|
   spec.add_dependency 'zeitwerk', '~> 2.7'
 
   # Ecosystem dependencies - require Rails 8.0.4+ compatible versions
-  spec.add_dependency 'breaker_machines', '~> 0.7'
+  spec.add_dependency 'breaker_machines', '~> 0.10'
   spec.add_dependency 'chrono_machines', '>= 0.2'
 
   spec.required_ruby_version = '>= 3.3.0'

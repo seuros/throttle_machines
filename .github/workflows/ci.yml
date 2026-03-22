@@ -22,7 +22,7 @@ jobs:
       RAILS_ENV: test
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
       - name: Set up Ruby
         uses: ruby/setup-ruby@v1
         with:
@@ -34,17 +34,17 @@ jobs:
 
   test-ruby-4:
     runs-on: ubuntu-latest
-    name: Ruby 4.0.0-preview3 / Rails 8.1
+    name: Ruby 4.0 / Rails 8.1
     env:
       RAILS_VERSION: "8.1"
       RAILS_ENV: test
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
       - name: Set up Ruby
         uses: ruby/setup-ruby@v1
         with:
-          ruby-version: "4.0.0-preview3"
+          ruby-version: "4.0"
           bundler-cache: true
 
       - name: Run tests

@@ -1,0 +1,14 @@
+[package]
+name = "throttle_machines_native"
+version = "0.1.0"
+edition = "2024"
+authors = ["Abdelkader Boudih <terminale@gmail.com>"]
+license = "MIT"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+throttle-machines = { workspace = true }
+magnus = { version = "0.8.2", features = ["rb-sys"] }
