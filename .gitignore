@@ -74,5 +74,13 @@ Gemfile.lock
 # Development
 .rake_tasks~
 
+# Native extension build artifacts
+/ext/**/*.bundle
+/ext/**/*.so
+/ext/**/*.dSYM/
+/ext/**/.sitearchdir.time
+/ext/**/Makefile
+/ext/**/target/
+
 # Dump directory for external repos
 /dump/
