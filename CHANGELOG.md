@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0](https://github.com/seuros/throttle_machines/compare/throttle_machines/v0.1.3...throttle_machines/v0.2.0) (2026-05-25)
+
+
+### Bug Fixes
+
+* build native extension with current rb_sys ([0960f00](https://github.com/seuros/throttle_machines/commit/0960f00ecbb3f55fd888984f7474c591fc0459ed))
+* ship pure ruby fallback gem ([3a54ac3](https://github.com/seuros/throttle_machines/commit/3a54ac3dffb073ece85a10c4c35ed3c426d658f6))
+
 ## [0.1.3](https://github.com/seuros/throttle_machines/compare/throttle_machines/v0.1.2...throttle_machines/v0.1.3) (2026-03-22)
 
 
