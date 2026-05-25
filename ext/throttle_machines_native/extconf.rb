@@ -18,7 +18,7 @@ end
 if can_compile_native?
   require "rb_sys/mkmf"
   create_rust_makefile("throttle_machines_native/throttle_machines_native") do |r|
-    r.path = "ffi"
+    r.ext_dir = "ffi"
   end
 else
   # Create stub Makefile that does nothing - allows gem install to succeed
