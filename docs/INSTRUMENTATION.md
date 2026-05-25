@@ -193,14 +193,14 @@ Emitted when an attempt wins the race.
 # Log important events
 ActiveSupport::Notifications.subscribe("rate_limit.throttled.throttle_machines") do |*, payload|
   Rails.logger.warn "Rate limit hit: #{payload[:key]} - retry after #{payload[:retry_after]}s"
-  
+
   # Track in your metrics system
   StatsD.increment("rate_limits.exceeded", tags: ["key:#{payload[:key]}"])
 end
 
 ActiveSupport::Notifications.subscribe("circuit_breaker.opened.throttle_machines") do |*, payload|
   Rails.logger.error "Circuit opened: #{payload[:key]} after #{payload[:failure_count]} failures"
-  
+
   # Send alert
   AlertManager.notify(
     severity: :critical,
@@ -212,8 +212,8 @@ end
 # Track performance metrics
 ActiveSupport::Notifications.subscribe("rate_limit.checked.throttle_machines") do |name, start, finish, id, payload|
   duration = (finish - start) * 1000
-  
-  StatsD.timing("rate_limit.check_duration", duration, 
+
+  StatsD.timing("rate_limit.check_duration", duration,
     tags: ["algorithm:#{payload[:algorithm]}", "allowed:#{payload[:allowed]}"]
   )
 end
@@ -226,14 +226,14 @@ class ThrottleLogger
   def self.setup
     ActiveSupport::Notifications.subscribe(/throttle_machines/) do |name, start, finish, id, payload|
       event_type = name.split('.').first(2).join('.')
-      
+
       log_entry = {
         timestamp: Time.now.iso8601,
         event: event_type,
         duration_ms: ((finish - start) * 1000).round(2),
         payload: payload
       }
-      
+
       # Log as JSON for structured logging
       Rails.logger.info log_entry.to_json
     end
@@ -271,7 +271,7 @@ rate_limit_hits = Concurrent::AtomicFixnum.new(0)
 
 ActiveSupport::Notifications.subscribe("rate_limit.throttled.throttle_machines") do |*, payload|
   count = rate_limit_hits.increment
-  
+
   if count > 100 # 100 throttles in the time window
     AutoScaler.scale_up("api_servers", increment: 2)
     rate_limit_hits.value = 0 # Reset counter
@@ -344,17 +344,17 @@ class InstrumentationTest < Minitest::Test
       @events << { name: name, payload: payload }
     end
   end
-  
+
   def teardown
     ActiveSupport::Notifications.unsubscribe(@subscriber)
   end
-  
+
   def test_rate_limit_events
     limiter = ThrottleMachines.limiter("test", limit: 1, period: 60)
-    
+
     limiter.throttle! { "first" }
     assert_equal "rate_limit.allowed.throttle_machines", @events.last[:name]
-    
+
     assert_raises(ThrottleMachines::ThrottledError) do
       limiter.throttle! { "second" }
     end

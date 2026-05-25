@@ -28,7 +28,7 @@ bundle install
 require 'throttle_machines'
 
 # Create a simple thruster control
-thruster = ThrottleMachines.limiter("main_thruster", 
+thruster = ThrottleMachines.limiter("main_thruster",
   limit: 5,    # 5 burns
   period: 10   # per 10 seconds
 )
@@ -159,11 +159,11 @@ scout = ThrottleMachines.limiter("recon_scout",
 ### Pattern 1: The Defensive Pilot
 ```ruby
 def fire_photon_torpedo(target)
-  torpedo_bay = ThrottleMachines.limiter("photon_torpedoes", 
-    limit: 6, 
+  torpedo_bay = ThrottleMachines.limiter("photon_torpedoes",
+    limit: 6,
     period: 30
   )
-  
+
   if torpedo_bay.allowed?
     # Fire!
     launch_torpedo_at(target)
@@ -185,12 +185,12 @@ class SpaceStation
       transporters: ThrottleMachines.limiter("transport", limit: 20, period: 60)
     }
   end
-  
+
   def request_docking(ship_id)
     return { error: "Docking bay full" } unless @limiters[:docking_bay].allowed?
     dock_ship(ship_id)
   end
-  
+
   def send_transmission(message)
     return { error: "Comms overloaded" } unless @limiters[:communications].allowed?
     transmit(message)
@@ -209,7 +209,7 @@ class AICore
       algorithm: :gcra # Smooth distribution
     )
   end
-  
+
   def process_request(query)
     unless @limiter.allowed?
       return {
@@ -218,7 +218,7 @@ class AICore
         suggestion: "Try again in #{@limiter.retry_after} seconds"
       }
     end
-    
+
     # Process the AI request
     run_ai_inference(query)
   end

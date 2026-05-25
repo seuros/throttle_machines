@@ -53,7 +53,7 @@ fi
 # Show rate limit configuration
 echo -e "${BLUE}Rate Limit Configuration:${NC}"
 echo "/rate_limit_test      → 10 requests/min (token_bucket)"
-echo "/api/rate_limit_test  → 5 requests/min (sliding_window)" 
+echo "/api/rate_limit_test  → 5 requests/min (sliding_window)"
 echo "/rate_limit_status    → 20 requests/min (fixed_window)"
 echo "/health               → 100 requests/min (token_bucket)"
 echo "Other endpoints       → 30 requests/min (sliding_window)"
@@ -83,7 +83,7 @@ if ps -p $SERVER_PID > /dev/null 2>&1; then
     echo ""
     echo -e "${BLUE}Available endpoints:${NC}"
     echo "Health check:         http://localhost:$PORT/health"
-    echo "Rate limit test:      http://localhost:$PORT/rate_limit_test"  
+    echo "Rate limit test:      http://localhost:$PORT/rate_limit_test"
     echo "API rate limit test:  http://localhost:$PORT/api/rate_limit_test"
     echo "Rate limit status:    http://localhost:$PORT/rate_limit_status"
     echo ""
@@ -94,13 +94,13 @@ if ps -p $SERVER_PID > /dev/null 2>&1; then
     echo ""
     echo -e "${YELLOW}Server is running... monitoring logs:${NC}"
     echo ""
-    
+
     # Monitor the instrumentation log in real-time
     if [ -f "$LOG_DIR/instrumentation.log" ]; then
         tail -f "$LOG_DIR/instrumentation.log" &
         TAIL_PID=$!
     fi
-    
+
     # Wait for server process
     wait $SERVER_PID
 else

@@ -53,11 +53,7 @@ pub fn check(
     let tokens_to_add = elapsed * refill_rate;
 
     // Refill up to capacity
-    let refilled = if tokens + tokens_to_add > capacity {
-        capacity
-    } else {
-        tokens + tokens_to_add
-    };
+    let refilled = (tokens + tokens_to_add).min(capacity);
 
     // Check if we have at least one token
     if refilled >= 1.0 {
@@ -92,11 +88,7 @@ pub fn peek(
 ) -> TokenBucketResult {
     let elapsed = now - last_refill;
     let tokens_to_add = elapsed * refill_rate;
-    let current_tokens = if tokens + tokens_to_add > capacity {
-        capacity
-    } else {
-        tokens + tokens_to_add
-    };
+    let current_tokens = (tokens + tokens_to_add).min(capacity);
 
     if current_tokens >= 1.0 {
         TokenBucketResult {

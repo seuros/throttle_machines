@@ -57,7 +57,7 @@ class DailyMissionQuota
       algorithm: :fixed_window
     )
   end
-  
+
   def accept_mission?
     if @limiter.allowed?
       log_mission_accepted
@@ -112,14 +112,14 @@ class BurstCapableAPI
       algorithm: :token_bucket
     )
   end
-  
+
   def handle_request
     if @limiter.allowed?
       process_api_call
     else
       # Bucket empty, must wait for regeneration
-      { 
-        error: "Rate limited", 
+      {
+        error: "Rate limited",
         retry_after: @limiter.retry_after,
         message: "Tokens regenerating at 10/minute"
       }
@@ -178,7 +178,7 @@ class GalacticAPI
       algorithm: :gcra # Smooth traffic, no bursts
     )
   end
-  
+
   def handle_request(client_id)
     # Each client gets their own "arrival time"
     # No synchronized retries!
@@ -233,7 +233,7 @@ class PrecisionRateLimiter
       algorithm: :sliding_window
     )
   end
-  
+
   def execute_precision_operation
     if @limiter.allowed?
       # Guaranteed to never exceed 100 in any 5-minute window
@@ -268,19 +268,19 @@ end
 
 ```ruby
 # For API quotas (1000 requests/day)
-daily_limit = ThrottleMachines.limiter("api_quota", 
+daily_limit = ThrottleMachines.limiter("api_quota",
   limit: 1000, period: 86400, algorithm: :fixed_window)
 
 # For burst-capable APIs (100 burst, 10/sec sustained)
-burst_api = ThrottleMachines.limiter("burst_api", 
+burst_api = ThrottleMachines.limiter("burst_api",
   limit: 100, period: 10, algorithm: :token_bucket)
 
 # For high-traffic APIs (prevent overload)
-smooth_api = ThrottleMachines.limiter("smooth_api", 
+smooth_api = ThrottleMachines.limiter("smooth_api",
   limit: 1000, period: 60, algorithm: :gcra)
 
 # For compliance/audit (exact limits)
-compliance = ThrottleMachines.limiter("compliance", 
+compliance = ThrottleMachines.limiter("compliance",
   limit: 50, period: 300, algorithm: :sliding_window)
 ```
 
@@ -293,22 +293,22 @@ compliance = ThrottleMachines.limiter("compliance",
 class HybridDefenseSystem
   def initialize
     # Layer different algorithms for comprehensive protection
-    @quotas = ThrottleMachines.limiter("daily_quota", 
+    @quotas = ThrottleMachines.limiter("daily_quota",
       limit: 10000, period: 86400, algorithm: :fixed_window)
-    
+
     @burst_control = ThrottleMachines.limiter("burst_control",
       limit: 100, period: 10, algorithm: :token_bucket)
-    
+
     @smooth_traffic = ThrottleMachines.limiter("smooth_traffic",
       limit: 60, period: 60, algorithm: :gcra)
   end
-  
+
   def process_request
     # Must pass all checks
     return quota_exceeded unless @quotas.allowed?
     return burst_limit_hit unless @burst_control.allowed?
     return traffic_limit unless @smooth_traffic.allowed?
-    
+
     handle_request
   end
 end

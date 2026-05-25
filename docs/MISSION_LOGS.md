@@ -95,7 +95,7 @@ Engineers attempted to update Kubernetes infrastructure configuration. The chang
 def apply_config_change(change)
   # No rate limiting on config updates!
   kubernetes_api.update(change)
-  
+
   # This triggered thousands of pod restarts simultaneously
   # Each restart triggered more API calls
   # System entered death spiral
@@ -138,11 +138,11 @@ class SmartClient
       api.call
     rescue RateLimitError => e
       retries += 1
-      
+
       # Exponential backoff with jitter
       backoff = [2 ** retries, 300].min  # Cap at 5 minutes
       jitter = rand(0..backoff * 0.1)    # Add 0-10% jitter
-      
+
       sleep(backoff + jitter)
       retry if retries < 5
       raise
@@ -219,17 +219,17 @@ end
 # Never go 0 → 100%. Always use gradual rollouts:
 class GradualRollout
   STAGES = [0.001, 0.01, 0.05, 0.10, 0.25, 0.50, 1.0]
-  
+
   def rollout_change
     STAGES.each do |percentage|
       apply_to_percentage(percentage)
       monitor_metrics
-      
+
       if errors_detected?
         rollback!
         break
       end
-      
+
       sleep 300  # 5 minutes between stages
     end
   end
@@ -240,7 +240,7 @@ end
 ```ruby
 # Always have a way to disable rate limiting in emergencies
 ThrottleMachines::RackMiddleware.configure do |config|
-  config.enabled = -> { 
+  config.enabled = -> {
     # Check Redis for emergency override
     !Redis.current.get("rate_limiting:emergency_disable")
   }

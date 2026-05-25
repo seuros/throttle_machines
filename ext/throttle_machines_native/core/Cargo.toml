@@ -16,3 +16,6 @@ crate-type = ["lib"]
 [features]
 default = ["std"]
 std = []
+
+[lints]
+workspace = true

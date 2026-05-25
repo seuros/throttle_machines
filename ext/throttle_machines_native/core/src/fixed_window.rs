@@ -111,11 +111,7 @@ pub fn peek(
 /// Calculate remaining requests in the current window.
 #[inline]
 pub fn remaining(count: u64, limit: u64) -> u64 {
-    if count >= limit {
-        0
-    } else {
-        limit - count
-    }
+    limit.saturating_sub(count)
 }
 
 #[cfg(test)]

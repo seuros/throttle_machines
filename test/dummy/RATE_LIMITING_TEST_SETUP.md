@@ -94,7 +94,7 @@ The Apache Bench script runs several test scenarios:
 - **Expected**: Most requests succeed due to high limit
 
 ### 5. Burst Test
-- **Target**: `/rate_limit_test` 
+- **Target**: `/rate_limit_test`
 - **Test**: 20 requests with 5 concurrent connections
 - **Expected**: Tests burst handling and algorithm behavior
 

@@ -16,17 +16,14 @@ Gem::Specification.new do |spec|
   spec.metadata['source_code_uri'] = spec.homepage
   spec.metadata['changelog_uri'] = "#{spec.homepage}/blob/main/CHANGELOG.md"
   spec.metadata['rubygems_mfa_required'] = 'true'
+  spec.metadata['cargo_crate_name'] = 'throttle_machines_native'
+  spec.metadata['cargo_manifest_path'] = 'ext/throttle_machines_native/ffi/Cargo.toml'
 
-  spec.files = Dir.chdir(File.expand_path(__dir__)) do
-    Dir['{app,config,db,lib}/**/*', 'LICENSE', 'Rakefile', 'README.md', 'Cargo.toml'] +
-      Dir['ext/**/*.{rb,rs,toml,md,lock}']
-  end
-
-  # Native extension (optional - falls back to pure Ruby if not available)
-  # Only include extension for CRuby (not JRuby/TruffleRuby)
-  unless RUBY_ENGINE == 'jruby' || RUBY_ENGINE == 'truffleruby'
-    spec.extensions = ['ext/throttle_machines_native/extconf.rb']
-  end
+  # The generic `ruby` gem is pure Ruby; native binaries are shipped only in
+  # platform gems built by rb_sys.
+  lib_files = Dir['lib/**/*'].reject { |path| path =~ /\.(bundle|so|dll)\z/ }
+  spec.files = lib_files + %w[LICENSE README.md]
+  spec.require_paths = ['lib']
 
   spec.add_dependency 'activesupport', '>= 8.0.4'
   spec.add_dependency 'concurrent-ruby', '~> 1.3'
@@ -34,8 +31,13 @@ Gem::Specification.new do |spec|
   spec.add_dependency 'zeitwerk', '~> 2.7'
 
   # Ecosystem dependencies - require Rails 8.0.4+ compatible versions
-  spec.add_dependency 'breaker_machines', '~> 0.10'
+  spec.add_dependency 'breaker_machines', '~> 0.12'
   spec.add_dependency 'chrono_machines', '>= 0.2'
+
+  spec.add_development_dependency 'minitest', '~> 5.16'
+  spec.add_development_dependency 'rb_sys', '~> 0.9'
+  spec.add_development_dependency 'rake', '~> 13.0'
+  spec.add_development_dependency 'rake-compiler', '~> 1.3'
 
   spec.required_ruby_version = '>= 3.3.0'
 end

@@ -23,7 +23,7 @@ class APIDefenseSystem
     ) do |req|
       "global"  # Single global key
     end
-    
+
     # Layer 2: Per-IP rate limiting (individual ship tracking)
     ThrottleMachines::RackMiddleware.throttle("ip_tracker",
       limit: 1000,
@@ -32,7 +32,7 @@ class APIDefenseSystem
     ) do |req|
       req.ip
     end
-    
+
     # Layer 3: Authenticated user limits (crew member privileges)
     ThrottleMachines::RackMiddleware.throttle("authenticated_crew",
       limit: 5000,
@@ -44,7 +44,7 @@ class APIDefenseSystem
       user_id = decode_jwt(token)["user_id"] rescue nil
       user_id ? "user:#{user_id}" : nil
     end
-    
+
     # Layer 4: Expensive endpoint protection (warp core safety)
     ThrottleMachines::RackMiddleware.throttle("expensive_operations",
       limit: 10,
@@ -55,7 +55,7 @@ class APIDefenseSystem
         req.ip  # Track by IP for expensive operations
       end
     end
-    
+
     # Special Forces: GraphQL complexity limiting
     ThrottleMachines::RackMiddleware.throttle("graphql_complexity",
       limit: 1000,
@@ -71,25 +71,25 @@ class APIDefenseSystem
       end
     end
   end
-  
+
   private
-  
+
   def self.decode_jwt(token)
     # Your JWT decoding logic
     JWT.decode(token, Rails.application.secret_key_base)[0]
   end
-  
+
   def self.calculate_graphql_complexity(body)
     # Parse GraphQL query and calculate complexity
     # This is a simplified example
     query = JSON.parse(body)["query"] rescue ""
-    
+
     # Count fields and nested queries
     complexity = 0
     complexity += query.scan(/{/).count * 10  # Each level adds complexity
     complexity += query.scan(/\w+\s*{/).count * 5  # Each field selection
     complexity += query.scan(/\(.*\)/).count * 20  # Arguments are expensive
-    
+
     complexity
   end
 end
@@ -107,31 +107,31 @@ APIDefenseSystem.initialize!
 # app/services/ai_throttle_system.rb
 class AIThrottleSystem
   TIERS = {
-    free: { 
-      requests: 10, 
-      tokens: 1000, 
+    free: {
+      requests: 10,
+      tokens: 1000,
       period: 86400,  # Daily limits
       model: "gpt-3.5-turbo"
     },
-    pro: { 
-      requests: 100, 
-      tokens: 50_000, 
+    pro: {
+      requests: 100,
+      tokens: 50_000,
       period: 86400,
       model: "gpt-4"
     },
-    enterprise: { 
-      requests: 1000, 
-      tokens: 500_000, 
+    enterprise: {
+      requests: 1000,
+      tokens: 500_000,
       period: 86400,
       model: "gpt-4-turbo"
     }
   }.freeze
-  
+
   def initialize(user)
     @user = user
     @tier = user.subscription_tier.to_sym
   end
-  
+
   def process_request(prompt)
     # Check request count limit
     request_limiter = ThrottleMachines.limiter(
@@ -140,7 +140,7 @@ class AIThrottleSystem
       period: TIERS[@tier][:period],
       algorithm: :fixed_window  # Hard daily limit
     )
-    
+
     unless request_limiter.allowed?
       return {
         error: "Daily request limit exceeded",
@@ -149,7 +149,7 @@ class AIThrottleSystem
         upgrade_url: "/pricing"
       }
     end
-    
+
     # Check token limit
     estimated_tokens = estimate_tokens(prompt)
     token_limiter = ThrottleMachines.limiter(
@@ -158,17 +158,17 @@ class AIThrottleSystem
       period: TIERS[@tier][:period],
       algorithm: :token_bucket  # Allow bursts within token limit
     )
-    
+
     # Use multiple tokens at once
     if token_limiter.allowed?(count: estimated_tokens)
       # Process with circuit breaker protection
       response = ai_circuit_breaker.run do
         call_ai_api(prompt, model: TIERS[@tier][:model])
       end
-      
+
       # Track actual usage
       track_usage(@user, response[:tokens_used])
-      
+
       response
     else
       {
@@ -186,9 +186,9 @@ class AIThrottleSystem
       cached_response: fetch_cached_response(prompt)
     }
   end
-  
+
   private
-  
+
   def ai_circuit_breaker
     @ai_circuit_breaker ||= ThrottleMachines::Breaker.new(
       "openai_api",
@@ -197,26 +197,26 @@ class AIThrottleSystem
       storage: ThrottleMachines.configuration.storage
     )
   end
-  
+
   def estimate_tokens(prompt)
     # Rough estimation: ~4 characters per token
     (prompt.length / 4.0).ceil + 100  # +100 for response
   end
-  
+
   def call_ai_api(prompt, model:)
     response = OpenAI::Client.new.completions(
       model: model,
       messages: [{ role: "user", content: prompt }],
       max_tokens: 1000
     )
-    
+
     {
       content: response.dig("choices", 0, "message", "content"),
       tokens_used: response.dig("usage", "total_tokens"),
       model: model
     }
   end
-  
+
   def track_usage(user, tokens_used)
     # Record usage for billing
     Usage.create!(
@@ -227,7 +227,7 @@ class AIThrottleSystem
       timestamp: Time.current
     )
   end
-  
+
   def fetch_cached_response(prompt)
     # Try to find similar previous response
     Rails.cache.fetch("ai:cached:#{Digest::MD5.hexdigest(prompt)}", expires_in: 1.hour) do
@@ -239,11 +239,11 @@ end
 # Usage in controller
 class AIController < ApplicationController
   before_action :authenticate_user!
-  
+
   def generate
     ai_system = AIThrottleSystem.new(current_user)
     result = ai_system.process_request(params[:prompt])
-    
+
     if result[:error]
       render json: result, status: 429
     else
@@ -271,7 +271,7 @@ class MultiTenantThrottle
       tenant_id = extract_tenant(req)
       tenant_id ? "tenant:#{tenant_id}" : nil
     end
-    
+
     # Prevent noisy neighbors
     ThrottleMachines::RackMiddleware.throttle("noisy_neighbor_protection",
       limit: 10_000,
@@ -281,7 +281,7 @@ class MultiTenantThrottle
       tenant_id = extract_tenant(req)
       tenant_id ? "tenant:burst:#{tenant_id}" : nil
     end
-    
+
     # API endpoint specific limits per tenant
     ThrottleMachines::RackMiddleware.throttle("endpoint_limits",
       limit: ->(req) { endpoint_limit(req) },
@@ -293,11 +293,11 @@ class MultiTenantThrottle
       tenant_id && endpoint ? "#{tenant_id}:#{endpoint}" : nil
     end
   end
-  
+
   def self.tenant_limit(request)
     tenant = find_tenant(request)
     return 100 unless tenant  # Default for unknown tenants
-    
+
     # Limits based on subscription plan
     case tenant.plan
     when "enterprise"
@@ -312,11 +312,11 @@ class MultiTenantThrottle
       10       # Minimal for expired/suspended
     end
   end
-  
+
   def self.tenant_period(request)
     tenant = find_tenant(request)
     return 3600 unless tenant  # Default 1 hour
-    
+
     # Different reset periods by plan
     case tenant.plan
     when "enterprise"
@@ -331,13 +331,13 @@ class MultiTenantThrottle
       86400  # 24 hours for restricted
     end
   end
-  
+
   def self.endpoint_limit(request)
     tenant = find_tenant(request)
     endpoint = request.path.split("/")[2]
-    
+
     return 10 unless tenant && endpoint
-    
+
     # Different limits for different endpoints
     base_limit = case endpoint
     when "search"
@@ -349,7 +349,7 @@ class MultiTenantThrottle
     else
       500  # Default endpoint limit
     end
-    
+
     # Adjust by plan
     multiplier = case tenant.plan
     when "enterprise" then 10
@@ -357,40 +357,40 @@ class MultiTenantThrottle
     when "startup" then 2
     else 1
     end
-    
+
     base_limit * multiplier
   end
-  
+
   def self.extract_tenant(request)
     # Try multiple methods to identify tenant
-    
+
     # Method 1: Subdomain (acme.example.com)
     subdomain = request.host.split('.').first
     return subdomain unless subdomain == 'www' || subdomain == 'api'
-    
+
     # Method 2: Header (X-Tenant-ID)
     return request.env["HTTP_X_TENANT_ID"] if request.env["HTTP_X_TENANT_ID"]
-    
+
     # Method 3: JWT claim
     if auth_header = request.env["HTTP_AUTHORIZATION"]
       token = auth_header.split(' ').last
       claims = JWT.decode(token, Rails.application.secret_key_base)[0] rescue {}
       return claims["tenant_id"] if claims["tenant_id"]
     end
-    
+
     # Method 4: API key lookup
     if api_key = request.params["api_key"] || request.env["HTTP_X_API_KEY"]
       tenant = Tenant.joins(:api_keys).where(api_keys: { key: api_key }).first
       return tenant.id if tenant
     end
-    
+
     nil
   end
-  
+
   def self.find_tenant(request)
     tenant_id = extract_tenant(request)
     return nil unless tenant_id
-    
+
     # Cache tenant lookups
     Rails.cache.fetch("tenant:#{tenant_id}", expires_in: 5.minutes) do
       Tenant.find_by(id: tenant_id) || Tenant.find_by(subdomain: tenant_id)
@@ -408,15 +408,15 @@ class TenantCircuitBreaker
       storage: ThrottleMachines.configuration.storage
     )
   end
-  
+
   def self.protect(tenant_id, service, &block)
     breaker = for_tenant(tenant_id, service)
-    
+
     breaker.run(&block)
   rescue ThrottleMachines::CircuitOpenError => e
     # Notify tenant admins
     TenantMailer.service_disruption(tenant_id, service, e.retry_after).deliver_later
-    
+
     # Return degraded response
     {
       error: "Service temporarily unavailable for your organization",
@@ -444,7 +444,7 @@ class GeographicDefenseGrid
     "OC" => { limit: 5_000, period: 300 },     # Oceania
     "AN" => { limit: 100, period: 300 }        # Antarctica (research stations only)
   }.freeze
-  
+
   def self.configure!
     # Regional rate limiting
     ThrottleMachines::RackMiddleware.throttle("regional_limits",
@@ -455,7 +455,7 @@ class GeographicDefenseGrid
       region = detect_region(req)
       "region:#{region}"
     end
-    
+
     # Country-specific regulations
     ThrottleMachines::RackMiddleware.throttle("country_compliance",
       limit: ->(req) { country_limit(req) },
@@ -465,7 +465,7 @@ class GeographicDefenseGrid
       country = detect_country(req)
       restricted_countries.include?(country) ? "country:#{country}" : nil
     end
-    
+
     # Data center proximity routing
     ThrottleMachines::RackMiddleware.throttle("datacenter_routing",
       limit: 1000,
@@ -475,7 +475,7 @@ class GeographicDefenseGrid
       datacenter = nearest_datacenter(req.ip)
       "dc:#{datacenter}:#{req.ip}"
     end
-    
+
     # GDPR-compliant limiting for EU
     ThrottleMachines::RackMiddleware.throttle("gdpr_compliance",
       limit: 100,
@@ -487,11 +487,11 @@ class GeographicDefenseGrid
       end
     end
   end
-  
+
   def self.detect_region(request)
     # Use GeoIP database
     @geoip ||= MaxMind::GeoIP2::Reader.new('GeoLite2-City.mmdb')
-    
+
     begin
       result = @geoip.city(request.ip)
       result.continent.code
@@ -500,10 +500,10 @@ class GeographicDefenseGrid
       "NA"  # Default to North America
     end
   end
-  
+
   def self.detect_country(request)
     @geoip ||= MaxMind::GeoIP2::Reader.new('GeoLite2-City.mmdb')
-    
+
     begin
       result = @geoip.city(request.ip)
       result.country.iso_code
@@ -511,15 +511,15 @@ class GeographicDefenseGrid
       "US"  # Default
     end
   end
-  
+
   def self.region_limit(request)
     region = detect_region(request)
     REGIONS[region][:limit]
   end
-  
+
   def self.country_limit(request)
     country = detect_country(request)
-    
+
     # Special limits for certain countries
     case country
     when "CN"
@@ -532,14 +532,14 @@ class GeographicDefenseGrid
       1000  # Default
     end
   end
-  
+
   def self.restricted_countries
     %w[CN RU KP IR SY]  # Example restricted countries
   end
-  
+
   def self.nearest_datacenter(ip)
     region = detect_region_from_ip(ip)
-    
+
     # Map regions to nearest datacenter
     case region
     when "NA" then "us-east-1"
@@ -549,7 +549,7 @@ class GeographicDefenseGrid
     else "us-east-1"  # Default
     end
   end
-  
+
   # Geographic circuit breakers
   def self.regional_circuit_breaker(region)
     ThrottleMachines::Breaker.new(
@@ -559,16 +559,16 @@ class GeographicDefenseGrid
       storage: ThrottleMachines.configuration.storage
     )
   end
-  
+
   # Health monitoring by region
   def self.regional_health
     REGIONS.keys.map do |region|
       breaker = regional_circuit_breaker(region)
-      limiter = ThrottleMachines.limiter("region:#{region}", 
-        limit: REGIONS[region][:limit], 
+      limiter = ThrottleMachines.limiter("region:#{region}",
+        limit: REGIONS[region][:limit],
         period: REGIONS[region][:period]
       )
-      
+
       {
         region: region,
       circuit_status: breaker.status_name,
@@ -583,16 +583,16 @@ end
 # Geographic monitoring job
 class GeographicMonitoringJob < ApplicationJob
   queue_as :monitoring
-  
+
   def perform
     health_report = GeographicDefenseGrid.regional_health
-    
+
     # Alert on unhealthy regions
     unhealthy_regions = health_report.reject { |r| r[:healthy] }
-    
+
     if unhealthy_regions.any?
       OpsMailer.regional_health_alert(unhealthy_regions).deliver_later
-      
+
       # Auto-scale if possible
       unhealthy_regions.each do |region|
         if region[:usage_percentage] > 90
@@ -600,7 +600,7 @@ class GeographicMonitoringJob < ApplicationJob
         end
       end
     end
-    
+
     # Store metrics
     health_report.each do |region|
       RegionalMetric.create!(
@@ -630,7 +630,7 @@ class RealtimeThrottleSystem
       period: 0, # Concurrent limit, not time-based
       algorithm: :fixed_window
     )
-    
+
     # Message rate limiting
     @message_limiter = ThrottleMachines.limiter(
       "websocket:messages",
@@ -638,7 +638,7 @@ class RealtimeThrottleSystem
       period: 60,  # 100 messages per minute
       algorithm: :gcra  # Smooth message flow
     )
-    
+
     # Subscription limits
     @subscription_limiter = ThrottleMachines.limiter(
       "websocket:subscriptions",
@@ -647,14 +647,14 @@ class RealtimeThrottleSystem
       algorithm: :fixed_window
     )
   end
-  
+
   # ActionCable connection class
   class ApplicationCable::Connection < ActionCable::Connection::Base
     identified_by :current_user
-    
+
     def connect
       self.current_user = find_verified_user
-      
+
       # Check connection limit
       if connection_allowed?
         track_connection
@@ -663,13 +663,13 @@ class RealtimeThrottleSystem
         reject_over_limit
       end
     end
-    
+
     def disconnect
       release_connection
     end
-    
+
     private
-    
+
     def find_verified_user
       if verified_user = User.find_by(id: cookies.signed[:user_id])
         verified_user
@@ -677,7 +677,7 @@ class RealtimeThrottleSystem
         reject_unauthorized_connection
       end
     end
-    
+
     def connection_allowed?
       limiter = ThrottleMachines.limiter(
         "ws:conn:#{current_user.id}",
@@ -685,10 +685,10 @@ class RealtimeThrottleSystem
         period: 0,
         algorithm: :fixed_window
       )
-      
+
       limiter.allowed?
     end
-    
+
     def connection_limit_for_user
       case current_user.subscription_tier
       when "enterprise" then 20
@@ -697,22 +697,22 @@ class RealtimeThrottleSystem
       else 2
       end
     end
-    
+
     def track_connection
       Redis.current.sadd("connections:#{current_user.id}", connection_identifier)
       Redis.current.expire("connections:#{current_user.id}", 1.hour)
     end
-    
+
     def release_connection
       Redis.current.srem("connections:#{current_user.id}", connection_identifier)
     end
-    
+
     def reject_over_limit
       logger.warn "Connection limit exceeded for user #{current_user.id}"
       reject_unauthorized_connection
     end
   end
-  
+
   # Channel-specific throttling
   class ApplicationCable::Channel < ActionCable::Channel::Base
     def subscribed
@@ -723,24 +723,24 @@ class RealtimeThrottleSystem
         reject_subscription("Subscription limit exceeded")
       end
     end
-    
+
     def receive(data)
       if message_allowed?
         process_message(data)
       else
-        transmit({ 
-          error: "Message rate limit exceeded", 
-          retry_after: message_limiter.retry_after 
+        transmit({
+          error: "Message rate limit exceeded",
+          retry_after: message_limiter.retry_after
         })
       end
     end
-    
+
     def unsubscribed
       release_subscription
     end
-    
+
     private
-    
+
     def subscription_allowed?
       limiter = ThrottleMachines.limiter(
         "ws:subs:#{current_user.id}",
@@ -748,14 +748,14 @@ class RealtimeThrottleSystem
         period: 0,
         algorithm: :fixed_window
       )
-      
+
       limiter.allowed?
     end
-    
+
     def message_allowed?
       message_limiter.allowed?
     end
-    
+
     def message_limiter
       @message_limiter ||= ThrottleMachines.limiter(
         "ws:msg:#{current_user.id}:#{specific_channel}",
@@ -764,7 +764,7 @@ class RealtimeThrottleSystem
         algorithm: :gcra
       )
     end
-    
+
     def message_limit_for_channel
       case self.class.name
       when "ChatChannel" then 60      # 1 message per second
@@ -773,13 +773,13 @@ class RealtimeThrottleSystem
       else 20
       end
     end
-    
+
     def reject_subscription(reason)
       logger.warn "Subscription rejected for #{current_user.id}: #{reason}"
       reject
     end
   end
-  
+
   # Presence tracking with limits
   class PresenceThrottle
     def self.track_presence(user_id, channel)
@@ -790,22 +790,22 @@ class RealtimeThrottleSystem
         period: 60,  # 10 presence updates per minute
         algorithm: :sliding_window
       )
-      
+
       if limiter.allowed?
         update_presence(user_id, channel)
         broadcast_presence_change(channel)
       end
     end
-    
+
     def self.update_presence(user_id, channel)
       key = "presence:#{channel}"
       Redis.current.zadd(key, Time.current.to_i, user_id)
       Redis.current.expire(key, 5.minutes)
-      
+
       # Cleanup old entries
       Redis.current.zremrangebyscore(key, 0, 5.minutes.ago.to_i)
     end
-    
+
     def self.broadcast_presence_change(channel)
       # Throttle presence broadcasts per channel
       broadcast_limiter = ThrottleMachines.limiter(
@@ -814,7 +814,7 @@ class RealtimeThrottleSystem
         period: 10,  # Max 5 broadcasts per 10 seconds per channel
         algorithm: :token_bucket
       )
-      
+
       if broadcast_limiter.allowed?
         ActionCable.server.broadcast(channel, {
           type: "presence_update",
@@ -823,7 +823,7 @@ class RealtimeThrottleSystem
       end
     end
   end
-  
+
   # Circuit breaker for WebSocket infrastructure
   def self.websocket_circuit_breaker
     @ws_breaker ||= ThrottleMachines::Breaker.new(
@@ -833,7 +833,7 @@ class RealtimeThrottleSystem
       storage: ThrottleMachines.configuration.storage
     )
   end
-  
+
   # Health monitoring
   def self.connection_health
     {
@@ -844,28 +844,28 @@ class RealtimeThrottleSystem
       infrastructure_healthy: infrastructure_check
     }
   end
-  
+
   private
-  
+
   def self.connection_breakdown
     User.group(:subscription_tier).count.map do |tier, count|
       active = Redis.current.keys("connections:*").count { |k|
         user_id = k.split(":").last
         User.find(user_id).subscription_tier == tier rescue false
       }
-      
+
       { tier: tier, total_users: count, active_connections: active }
     end
   end
-  
+
   def self.calculate_message_rate
     # Get message counts from last minute
     keys = Redis.current.keys("throttle:ws:msg:*")
     total = keys.sum { |k| Redis.current.get(k).to_i }
-    
+
     total.to_f / 60  # Messages per second
   end
-  
+
   def self.infrastructure_check
     begin
       # Test ActionCable Redis connection

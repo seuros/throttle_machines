@@ -40,7 +40,7 @@ pub struct GcraResult {
 #[inline]
 pub fn check(tat: f64, now: f64, emission_interval: f64, delay_tolerance: f64) -> GcraResult {
     // TAT should be at least `now` (can't be in the past)
-    let new_tat = if tat > now { tat } else { now };
+    let new_tat = tat.max(now);
 
     // How far ahead is the TAT from now?
     let diff = new_tat - now;
@@ -68,7 +68,7 @@ pub fn check(tat: f64, now: f64, emission_interval: f64, delay_tolerance: f64) -
 /// This is useful for checking remaining capacity without modifying state.
 #[inline]
 pub fn peek(tat: f64, now: f64, delay_tolerance: f64) -> GcraResult {
-    let effective_tat = if tat > now { tat } else { now };
+    let effective_tat = tat.max(now);
     let diff = effective_tat - now;
     let allowed = diff <= delay_tolerance;
 

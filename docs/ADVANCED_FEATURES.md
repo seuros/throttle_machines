@@ -72,7 +72,7 @@ Async do
     # Non-blocking operation
     response = async_api_call
   end
-  
+
   # Or with automatic retry
   result = quantum_limiter.throttle_async(max_wait: 5) do
     perform_operation
@@ -93,7 +93,7 @@ Async do
   result = async_shield.run_async do
     fetch_remote_data
   end
-  
+
   # Fire and forget
   async_shield.fire_async do
     send_telemetry_data
@@ -113,12 +113,12 @@ Manage related circuits as a unified fleet with dependencies and shared configur
 payment_fleet = ThrottleMachines::CircuitGroup.new("payment_system") do
   # Main payment gateway
   breaker :gateway, failures: 5, timeout: 300
-  
+
   # Rate limiters with dependencies
   limiter :charge, limit: 100, period: 60, depends_on: :gateway
   limiter :refund, limit: 50, period: 60, depends_on: :gateway
   limiter :void, limit: 20, period: 60, depends_on: [:gateway, :charge]
-  
+
   # Webhook system depends on gateway
   breaker :webhooks, failures: 3, timeout: 60, depends_on: :gateway
 end
@@ -215,7 +215,7 @@ service_mesh = ThrottleMachines::CircuitGroup.new("microservices") do
   # Core services
   breaker :auth, failures: 5, timeout: 60
   breaker :user_data, failures: 5, timeout: 60, depends_on: :auth
-  
+
   # Async rate limiters
   limiter :api_gateway, limit: 10000, period: 60, algorithm: :gcra
   limiter :graphql, limit: 1000, period: 60, depends_on: [:auth, :user_data]
@@ -236,17 +236,17 @@ end
 ```ruby
 class SmartBackendSelector
   def initialize
-    @primary = ThrottleMachines::AsyncBreaker.new("primary_api", 
+    @primary = ThrottleMachines::AsyncBreaker.new("primary_api",
       failure_threshold: 3, timeout: 60)
-    @secondary = ThrottleMachines::AsyncBreaker.new("secondary_api", 
+    @secondary = ThrottleMachines::AsyncBreaker.new("secondary_api",
       failure_threshold: 5, timeout: 120)
     @hedged = ThrottleMachines::HedgedRequest.new(delay: 0.1, max_attempts: 2)
   end
-  
+
   def fetch_data(key)
     # Try primary first
     return @primary.call { primary_api.get(key) } if @primary.allow?
-    
+
     # If primary is down, use hedged request on secondaries
     @hedged.run do |attempt|
       case attempt
@@ -290,13 +290,13 @@ SERVICE_MESH = ThrottleMachines::CircuitGroup.new("production") do
   # Database layer
   breaker :primary_db, failures: 5, timeout: 300
   breaker :read_replica, failures: 10, timeout: 60
-  
+
   # Caching layer
   breaker :redis_cache, failures: 3, timeout: 30
   breaker :memcached, failures: 5, timeout: 30
-  
+
   # API layer with dependencies
-  limiter :public_api, limit: 10000, period: 60, 
+  limiter :public_api, limit: 10000, period: 60,
     depends_on: [:primary_db, :redis_cache]
   limiter :admin_api, limit: 1000, period: 60,
     depends_on: [:primary_db]
@@ -325,14 +325,14 @@ class AdvancedThrottleMonitor
       hedged_success_rate: collect_hedged_metrics
     }
   end
-  
+
   private
-  
+
   def self.collect_cascade_metrics
     # Monitor cascade activations
     CRITICAL_SERVICES.cascade_status
   end
-  
+
   def self.collect_group_metrics
     # Monitor service mesh health
     SERVICE_MESH.status

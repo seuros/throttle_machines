@@ -1,6 +1,6 @@
 //! Ruby FFI bindings for throttle-machines rate limiting algorithms.
 
-use magnus::{function, prelude::*, Ruby};
+use magnus::{Ruby, function, prelude::*};
 use throttle_machines::{fixed_window, gcra, token_bucket};
 
 /// GCRA rate limit check.

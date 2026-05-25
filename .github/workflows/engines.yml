@@ -32,4 +32,4 @@ jobs:
           bundler-cache: true
 
       - name: Run tests
-        run: bundle exec ruby -Ilib:test test/*_test.rb
+        run: bundle exec rake test

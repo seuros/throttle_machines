@@ -98,14 +98,14 @@ class FleetCommand
         reconnect_delay_max: 2.0
       )
     end
-    
+
     ThrottleMachines.configure do |config|
       config.storage = ThrottleMachines::Storage::Redis.new(
         pool: primary_pool,
         prefix: "throttle:#{ENV['ENVIRONMENT']}:",  # Namespace by environment
         expires_in: 7200  # Auto-cleanup after 2 hours
       )
-      
+
       # Configure default algorithm for the fleet
       config.default_algorithm = :gcra
     end
@@ -125,13 +125,13 @@ class MultiRegionThrottle
     @redis_pool = ConnectionPool.new(size: 5) do
       Redis.new(url: ENV["REDIS_#{region.upcase}_URL"])
     end
-    
+
     @storage = ThrottleMachines::Storage::Redis.new(
       pool: @redis_pool,
       prefix: "region:#{region}:"
     )
   end
-  
+
   def create_limiter(name, **options)
     ThrottleMachines.limiter(
       "#{@region}:#{name}",
@@ -155,13 +155,13 @@ class TieredThrottleSystem
   def initialize
     # Fast local cache for frequent checks
     @memory_storage = ThrottleMachines::Storage::Memory.new
-    
+
     # Distributed storage for coordination
     @redis_storage = ThrottleMachines::Storage::Redis.new(
       pool: ConnectionPool.new { Redis.new }
     )
   end
-  
+
   def create_limiter(name, tier: :standard, **options)
     storage = case tier
     when :local
@@ -172,7 +172,7 @@ class TieredThrottleSystem
       # Hybrid approach could be implemented here
       @redis_storage
     end
-    
+
     ThrottleMachines.limiter(name, storage: storage, **options)
   end
 end
@@ -185,12 +185,12 @@ class ResilientThrottle
     @primary_pool = ConnectionPool.new(size: 10) do
       Redis.new(url: ENV['REDIS_PRIMARY_URL'])
     end
-    
+
     @fallback_pool = ConnectionPool.new(size: 10) do
       Redis.new(url: ENV['REDIS_SECONDARY_URL'])
     end
   end
-  
+
   def create_limiter(name, **options)
     ThrottleMachines.limiter(name, **options).tap do |limiter|
       # Add custom error handling
@@ -200,7 +200,7 @@ class ResilientThrottle
         rescue Redis::ConnectionError => e
           # Log the error
           Rails.logger.error "Redis primary failed: #{e.message}"
-          
+
           # Could implement fallback logic here
           # For now, fail open (allow the request)
           true
@@ -221,7 +221,7 @@ end
    ```ruby
    # Formula: pool_size = number_of_threads + headroom
    pool_size = Thread.list.select { |t| t.status == "run" }.count + 5
-   
+
    ConnectionPool.new(size: pool_size, timeout: 5) do
      Redis.new
    end
@@ -252,7 +252,7 @@ end
 class MemoryMaintenanceCrew
   def self.cleanup!
     return unless using_memory_storage?
-    
+
     # Clear expired entries periodically
     Thread.new do
       loop do
@@ -274,7 +274,7 @@ class ThrottleMonitor
   def self.stats
     storage = ThrottleMachines.configuration.storage
     return {} unless storage.is_a?(ThrottleMachines::Storage::Redis)
-    
+
     storage.with_redis do |redis|
       {
         total_keys: redis.dbsize,
@@ -284,7 +284,7 @@ class ThrottleMonitor
       }
     end
   end
-  
+
   def self.health_check
     ThrottleMachines.limiter("health_check", limit: 1, period: 1).allowed?
     { status: "healthy", storage: "redis" }
@@ -307,10 +307,10 @@ class StorageCircuitBreaker
     @circuit_open = false
     @last_failure = nil
   end
-  
+
   def with_circuit
     return yield if @circuit_open && Time.now - @last_failure < 30
-    
+
     begin
       result = yield
       @failure_count = 0  # Reset on success
@@ -319,12 +319,12 @@ class StorageCircuitBreaker
     rescue Redis::ConnectionError => e
       @failure_count += 1
       @last_failure = Time.now
-      
+
       if @failure_count >= 3
         @circuit_open = true
         Rails.logger.error "Storage circuit opened after #{@failure_count} failures"
       end
-      
+
       # Fail open - allow requests when storage is down
       true
     end

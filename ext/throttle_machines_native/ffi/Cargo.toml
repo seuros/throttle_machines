@@ -9,6 +9,9 @@ publish = false
 [lib]
 crate-type = ["cdylib"]
 
+[lints]
+workspace = true
+
 [dependencies]
-throttle-machines = { workspace = true }
+throttle-machines = { path = "../core", version = "0.1" }
 magnus = { version = "0.8.2", features = ["rb-sys"] }

@@ -26,30 +26,30 @@ In the vast darkness of space, telemetry is your eyes and ears. This guide shows
 # Subscribe to all ThrottleMachines events
 ActiveSupport::Notifications.subscribe(/throttle_machines/) do |name, start, finish, id, payload|
   duration = (finish - start) * 1000  # Convert to milliseconds
-  
+
   case name
   when "throttle.throttle_machines"
     Rails.logger.info "⚡ Rate limit checked: #{payload[:key]} - " \
                      "Allowed: #{payload[:allowed]} - Duration: #{duration.round(2)}ms"
-    
+
     # Send to metrics system
     StatsD.increment("throttle.checks", tags: ["allowed:#{payload[:allowed]}"])
     StatsD.histogram("throttle.check_duration", duration)
-    
+
   when "circuit_open.throttle_machines"
     Rails.logger.warn "🛡️ Circuit breaker opened: #{payload[:name]} - " \
                      "Failures: #{payload[:failure_count]}"
-    
+
     # Alert operations team
     PagerDuty.trigger(
       "Circuit breaker #{payload[:name]} is open",
       details: payload
     )
-    
+
   when "circuit_reset.throttle_machines"
     Rails.logger.info "✅ Circuit breaker reset: #{payload[:name]}"
-    
-    StatsD.event("Circuit breaker recovered", 
+
+    StatsD.event("Circuit breaker recovered",
                 "#{payload[:name]} is operational again")
   end
 end
@@ -57,19 +57,19 @@ end
 # Rack middleware telemetry
 ActiveSupport::Notifications.subscribe(/rack_attack/) do |name, start, finish, id, payload|
   request = payload[:request]
-  
+
   case name
   when "throttle.rack_attack"
-    StatsD.increment("rack.throttled", 
+    StatsD.increment("rack.throttled",
       tags: ["path:#{request.path}", "ip:#{request.ip}"])
-    
+
   when "blocklist.rack_attack"
     Rails.logger.error "🚫 Blocked request from #{request.ip} to #{request.path}"
     SecurityAlert.notify("Blocked IP", ip: request.ip, path: request.path)
-    
+
   when "safelist.rack_attack"
     StatsD.increment("rack.safelisted")
-    
+
   when "track.rack_attack"
     # Log suspicious activity for analysis
     SuspiciousActivity.record(
@@ -97,13 +97,13 @@ class ThrottleTelemetry
         system: collect_system_metrics
       }
     end
-    
+
     private
-    
+
     def collect_limiter_metrics
       # Collect metrics for all active limiters
       limiters = ThrottleMachines.limiters  # Hypothetical method
-      
+
       limiters.map do |name, limiter|
         {
           name: name,
@@ -115,10 +115,10 @@ class ThrottleTelemetry
         }
       end
     end
-    
+
     def collect_breaker_metrics
       breakers = ThrottleMachines.breakers  # Hypothetical method
-      
+
       breakers.map do |name, breaker|
         {
           name: name,
@@ -130,22 +130,22 @@ class ThrottleTelemetry
         }
       end
     end
-    
+
     def collect_storage_metrics
       storage = ThrottleMachines.configuration.storage
-      
+
       if storage.is_a?(ThrottleMachines::Storage::Redis)
         measure_redis_health(storage)
       else
         { type: "memory", status: "healthy" }
       end
     end
-    
+
     def measure_redis_health(storage)
       start = Time.current
       storage.with_redis { |r| r.ping }
       latency = (Time.current - start) * 1000
-      
+
       {
         type: "redis",
         status: "healthy",
@@ -160,13 +160,13 @@ class ThrottleTelemetry
         error: e.message
       }
     end
-    
+
     def calculate_uptime(breaker)
       total_time = Time.current - breaker.created_at
       open_time = breaker.time_spent_open
       ((total_time - open_time) / total_time * 100).round(2)
     end
-    
+
     def collect_system_metrics
       {
         total_limiters: ThrottleMachines.limiters.count,
@@ -191,9 +191,9 @@ class TelemetryDashboard
       system_health: system_health_score
     }
   end
-  
+
   private
-  
+
   def self.current_traffic_stats
     {
       requests_per_minute: redis.get("stats:rpm").to_i,
@@ -202,10 +202,10 @@ class TelemetryDashboard
       unique_ips: redis.scard("stats:unique_ips:#{current_minute}")
     }
   end
-  
+
   def self.active_alerts
     alerts = []
-    
+
     # Check for high throttle rates
     if calculate_throttle_rate > 10
       alerts << {
@@ -214,7 +214,7 @@ class TelemetryDashboard
         value: "#{calculate_throttle_rate}%"
       }
     end
-    
+
     # Check for open circuits
     open_circuits = ThrottleMachines.breakers.select { |_, b| b.status_name == :open }
     if open_circuits.any?
@@ -224,49 +224,49 @@ class TelemetryDashboard
         circuits: open_circuits.keys
       }
     end
-    
+
     alerts
   end
-  
+
   def self.top_limited_endpoints
     # Get from Redis sorted set
     redis.zrevrange("stats:throttled_endpoints", 0, 4, with_scores: true)
       .map { |endpoint, count| { endpoint: endpoint, count: count.to_i } }
   end
-  
+
   def self.system_health_score
     score = 100
-    
+
     # Deduct for high throttle rate
     throttle_rate = calculate_throttle_rate
     score -= [throttle_rate, 30].min
-    
+
     # Deduct for open circuits
     open_circuits = ThrottleMachines.breakers.count { |_, b| b.status_name == :open }
     score -= (open_circuits * 10)
-    
+
     # Deduct for storage issues
     begin
       ThrottleMachines.configuration.storage.healthy?
     rescue
       score -= 20
     end
-    
+
     [score, 0].max  # Never go below 0
   end
-  
+
   def self.calculate_throttle_rate
     rpm = redis.get("stats:rpm").to_f
     throttled = redis.get("stats:throttled_rpm").to_f
-    
+
     return 0 if rpm.zero?
     ((throttled / rpm) * 100).round(2)
   end
-  
+
   def self.redis
     @redis ||= Redis.new
   end
-  
+
   def self.current_minute
     Time.current.strftime("%Y%m%d%H%M")
   end
@@ -283,10 +283,10 @@ class PerformanceMonitor
   def self.track_request(name, &block)
     start_time = Process.clock_gettime(Process::CLOCK_MONOTONIC)
     memory_before = current_memory_usage
-    
+
     begin
       result = yield
-      
+
       track_success(name, start_time, memory_before)
       result
     rescue => e
@@ -294,30 +294,30 @@ class PerformanceMonitor
       raise
     end
   end
-  
+
   private
-  
+
   def self.track_success(name, start_time, memory_before)
     duration = Process.clock_gettime(Process::CLOCK_MONOTONIC) - start_time
     memory_delta = current_memory_usage - memory_before
-    
+
     StatsD.histogram("request.duration", duration * 1000, tags: ["endpoint:#{name}"])
     StatsD.histogram("request.memory_delta", memory_delta, tags: ["endpoint:#{name}"])
-    
+
     # Log slow requests
     if duration > 1.0  # 1 second
       Rails.logger.warn "Slow request detected: #{name} took #{duration.round(3)}s"
     end
   end
-  
+
   def self.track_failure(name, start_time, memory_before, error)
     duration = Process.clock_gettime(Process::CLOCK_MONOTONIC) - start_time
-    
+
     StatsD.increment("request.errors", tags: ["endpoint:#{name}", "error:#{error.class}"])
-    
+
     Rails.logger.error "Request failed: #{name} - #{error.message} (#{duration.round(3)}s)"
   end
-  
+
   def self.current_memory_usage
     # Get current process memory usage in MB
     `ps -o rss= -p #{Process.pid}`.to_i / 1024.0
@@ -327,15 +327,15 @@ end
 # Usage in controllers
 class ApplicationController < ActionController::Base
   around_action :monitor_performance
-  
+
   private
-  
+
   def monitor_performance
     PerformanceMonitor.track_request(monitoring_name) do
       yield
     end
   end
-  
+
   def monitoring_name
     "#{controller_name}##{action_name}"
   end
@@ -351,7 +351,7 @@ end
 class ThrottleAnomalyDetector
   def self.check_for_anomalies
     anomalies = []
-    
+
     # Sudden spike in throttled requests
     if spike_detected?(:throttled_requests)
       anomalies << {
@@ -360,7 +360,7 @@ class ThrottleAnomalyDetector
         message: "Throttled requests increased by #{spike_percentage(:throttled_requests)}%"
       }
     end
-    
+
     # Unusual geographic patterns
     if unusual_geographic_activity?
       anomalies << {
@@ -369,7 +369,7 @@ class ThrottleAnomalyDetector
         message: "Unusual traffic from #{unusual_regions.join(', ')}"
       }
     end
-    
+
     # Circuit breaker cascade
     if circuit_cascade_risk?
       anomalies << {
@@ -378,52 +378,52 @@ class ThrottleAnomalyDetector
         message: "Multiple circuits approaching failure threshold"
       }
     end
-    
+
     # Process anomalies
     anomalies.each { |anomaly| process_anomaly(anomaly) }
   end
-  
+
   private
-  
+
   def self.spike_detected?(metric)
     current = current_value(metric)
     baseline = baseline_value(metric)
-    
+
     return false if baseline.zero?
-    
+
     change_ratio = (current - baseline).to_f / baseline
     change_ratio > 0.5  # 50% increase
   end
-  
+
   def self.spike_percentage(metric)
     current = current_value(metric)
     baseline = baseline_value(metric)
-    
+
     return 0 if baseline.zero?
-    
+
     (((current - baseline).to_f / baseline) * 100).round
   end
-  
+
   def self.unusual_geographic_activity?
     current_regions = redis.smembers("geo:current_hour")
     typical_regions = redis.smembers("geo:typical")
-    
+
     new_regions = current_regions - typical_regions
     new_regions.size > 3  # More than 3 new regions
   end
-  
+
   def self.circuit_cascade_risk?
     at_risk = ThrottleMachines.breakers.count do |_, breaker|
       breaker.failure_count > (breaker.threshold * 0.7)
     end
-    
+
     at_risk >= 3  # 3 or more circuits near failure
   end
-  
+
   def self.process_anomaly(anomaly)
     # Log it
     Rails.logger.warn "Anomaly detected: #{anomaly.to_json}"
-    
+
     # Send appropriate alerts
     case anomaly[:severity]
     when "critical"
@@ -434,19 +434,19 @@ class ThrottleAnomalyDetector
     when "medium"
       Slack.notify("#ops-monitoring", format_anomaly(anomaly))
     end
-    
+
     # Store for analysis
     redis.lpush("anomalies:#{Date.today}", anomaly.to_json)
     redis.expire("anomalies:#{Date.today}", 7.days)
   end
-  
+
   def self.format_anomaly(anomaly)
     emoji = case anomaly[:severity]
             when "critical" then "🚨"
             when "high" then "⚠️"
             when "medium" then "📊"
             end
-            
+
     "#{emoji} #{anomaly[:message]}"
   end
 end
@@ -454,7 +454,7 @@ end
 # Run anomaly detection periodically
 class AnomalyDetectionJob < ApplicationJob
   queue_as :monitoring
-  
+
   def perform
     ThrottleAnomalyDetector.check_for_anomalies
   end
@@ -529,46 +529,46 @@ class ThrottleMachines::PrometheusExporter
     @registry = Prometheus::Client.registry
     setup_metrics
   end
-  
+
   def call(env)
     update_metrics
-    
+
     if env["PATH_INFO"] == "/metrics"
       [200, {"content-type" => "text/plain"}, [Prometheus::Client::Formats::Text.marshal(@registry)]]
     else
       [404, {"content-type" => "text/plain"}, ["Not Found"]]
     end
   end
-  
+
   private
-  
+
   def setup_metrics
     @request_counter = @registry.counter(
       :throttle_requests_total,
       docstring: "Total number of throttle checks",
       labels: [:result]
     )
-    
+
     @circuit_state = @registry.gauge(
       :circuit_breaker_state,
       docstring: "Circuit breaker state (0=closed, 1=open, 2=half-open)",
       labels: [:name]
     )
-    
+
     @storage_latency = @registry.histogram(
       :storage_latency_seconds,
       docstring: "Storage operation latency",
       labels: [:operation]
     )
   end
-  
+
   def update_metrics
     # Update throttle metrics
     ThrottleMachines.limiters.each do |name, limiter|
       allowed = limiter.allowed?
       @request_counter.increment(labels: { result: allowed ? "allowed" : "throttled" })
     end
-    
+
     # Update circuit breaker metrics
     ThrottleMachines.breakers.each do |name, breaker|
       state_value = case breaker.status_name
@@ -595,7 +595,7 @@ end
 ```ruby
 class HealthCheckController < ApplicationController
   skip_before_action :verify_authenticity_token
-  
+
   def show
     health = {
       status: overall_status,
@@ -607,13 +607,13 @@ class HealthCheckController < ApplicationController
         performance: check_performance
       }
     }
-    
+
     status_code = health[:status] == "healthy" ? 200 : 503
     render json: health, status: status_code
   end
-  
+
   private
-  
+
   def overall_status
     components = [
       check_rate_limiting[:status],
@@ -621,7 +621,7 @@ class HealthCheckController < ApplicationController
       check_storage[:status],
       check_performance[:status]
     ]
-    
+
     if components.all? { |s| s == "healthy" }
       "healthy"
     elsif components.any? { |s| s == "critical" }
@@ -630,20 +630,20 @@ class HealthCheckController < ApplicationController
       "degraded"
     end
   end
-  
+
   def check_rate_limiting
     # Test creating a limiter
     test_limiter = ThrottleMachines.limiter("health_check", limit: 1, period: 1)
     test_limiter.allowed?
-    
+
     { status: "healthy", message: "Rate limiting operational" }
   rescue => e
     { status: "critical", message: "Rate limiting failed", error: e.message }
   end
-  
+
   def check_circuit_breakers
     open_circuits = ThrottleMachines.breakers.select { |_, b| b.status_name == :open }
-    
+
     if open_circuits.empty?
       { status: "healthy", message: "All circuits closed" }
     elsif open_circuits.size < 3
@@ -652,12 +652,12 @@ class HealthCheckController < ApplicationController
       { status: "critical", message: "Multiple circuits open", circuits: open_circuits.keys }
     end
   end
-  
+
   def check_storage
     start = Time.current
     ThrottleMachines.configuration.storage.healthy?
     latency = (Time.current - start) * 1000
-    
+
     if latency < 10
       { status: "healthy", message: "Storage responsive", latency_ms: latency.round(2) }
     elsif latency < 50
@@ -668,13 +668,13 @@ class HealthCheckController < ApplicationController
   rescue => e
     { status: "critical", message: "Storage unavailable", error: e.message }
   end
-  
+
   def check_performance
     # Check recent performance metrics
     avg_response_time = Rails.cache.fetch("metrics:avg_response_time", expires_in: 1.minute) do
       calculate_average_response_time
     end
-    
+
     if avg_response_time < 100
       { status: "healthy", message: "Performance optimal", avg_ms: avg_response_time }
     elsif avg_response_time < 500
@@ -683,7 +683,7 @@ class HealthCheckController < ApplicationController
       { status: "critical", message: "Performance critical", avg_ms: avg_response_time }
     end
   end
-  
+
   def calculate_average_response_time
     # Implement based on your metrics collection
     rand(50..150)  # Placeholder

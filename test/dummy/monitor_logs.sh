@@ -21,7 +21,7 @@ format_log_entry() {
     while IFS= read -r line; do
         if [[ $line =~ \[INFO\][[:space:]]+(.+)$ ]]; then
             json_part="${BASH_REMATCH[1]}"
-            
+
             # Try to parse key information
             if command -v jq >/dev/null 2>&1; then
                 # Use jq if available for better parsing
@@ -31,7 +31,7 @@ format_log_entry() {
                 allowed=$(echo "$json_part" | jq -r '.payload.allowed // empty' 2>/dev/null)
                 remaining=$(echo "$json_part" | jq -r '.payload.remaining // empty' 2>/dev/null)
                 retry_after=$(echo "$json_part" | jq -r '.payload.retry_after // empty' 2>/dev/null)
-                
+
                 if [[ -n "$event" ]]; then
                     # Format based on event type
                     case "$event" in

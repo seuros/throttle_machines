@@ -77,17 +77,17 @@ class ExternalAPIShield
       storage: ThrottleMachines.configuration.storage
     )
   end
-  
+
   def call_api(&block)
     @shields.run do
       response = yield
-      
+
       # Manual failure detection
       if response.status >= 500
         @shields.record_failure
         raise "API returned #{response.status}"
       end
-      
+
       response
     end
   rescue ThrottleMachines::CircuitOpenError => e
@@ -99,9 +99,9 @@ class ExternalAPIShield
       retry_after: e.retry_after
     }
   end
-  
+
   private
-  
+
   def fetch_cached_response
     # Return last known good response
     Rails.cache.read("#{@api_name}_fallback") || { error: "No cached data" }
@@ -126,7 +126,7 @@ class DatabaseShield
       storage: ThrottleMachines.configuration.storage
     )
   end
-  
+
   def query(&block)
     @shields.run do
       # Set aggressive timeout for database queries
@@ -165,20 +165,20 @@ class CascadingDefenseSystem
       failure_threshold: 10,
       reset_timeout: 60
     )
-    
+
     @secondary_shield = ThrottleMachines::Breaker.new(
-      "secondary_shield", 
+      "secondary_shield",
       failure_threshold: 5,
       reset_timeout: 300  # Longer recovery time
     )
-    
+
     @emergency_shield = ThrottleMachines::Breaker.new(
       "emergency_shield",
       failure_threshold: 3,
       reset_timeout: 600  # 10 minute lockdown
     )
   end
-  
+
   def execute_critical_operation(&block)
     # Try primary systems first
     @primary_shield.run { return yield }
@@ -191,14 +191,14 @@ class CascadingDefenseSystem
       @emergency_shield.run { return emergency_fallback }
     end
   end
-  
+
   private
-  
+
   def degraded_operation(&block)
     # Run with reduced functionality
     with_timeout(1) { yield }
   end
-  
+
   def emergency_fallback
     # Minimal safe response
     { status: "emergency_mode", message: "All systems protected" }
@@ -217,11 +217,11 @@ class AdaptiveShield
     @service_name = service_name
     @base_threshold = 5
   end
-  
+
   def create_shield
     # Adjust shield sensitivity based on time of day
     threshold = calculate_dynamic_threshold
-    
+
     ThrottleMachines::Breaker.new(
       "adaptive_shield_#{@service_name}",
       failure_threshold: threshold,
@@ -229,12 +229,12 @@ class AdaptiveShield
       storage: ThrottleMachines.configuration.storage
     )
   end
-  
+
   private
-  
+
   def calculate_dynamic_threshold
     hour = Time.current.hour
-    
+
     case hour
     when 0..6   # Night shift - more sensitive
       @base_threshold - 2
@@ -248,12 +248,12 @@ class AdaptiveShield
       @base_threshold + 1
     end
   end
-  
+
   def calculate_recovery_time
     # Longer recovery during peak hours
     peak_hours? ? 300 : 60
   end
-  
+
   def peak_hours?
     hour = Time.current.hour
     (7..9).include?(hour) || (17..19).include?(hour)
@@ -267,7 +267,7 @@ class ShieldTelemetry
   def self.monitor(shield_name, &block)
     start_time = Time.current
     shield_state = :transparent
-    
+
     begin
       result = yield
       record_success(shield_name, Time.current - start_time)
@@ -284,18 +284,18 @@ class ShieldTelemetry
       emit_telemetry(shield_name, shield_state, Time.current - start_time)
     end
   end
-  
+
   private
-  
+
   def self.record_success(shield_name, duration)
     StatsD.timing("shields.#{shield_name}.success", duration)
     StatsD.increment("shields.#{shield_name}.requests.success")
   end
-  
+
   def self.record_shield_activation(shield_name, retry_after)
     StatsD.increment("shields.#{shield_name}.activated")
     StatsD.gauge("shields.#{shield_name}.retry_after", retry_after)
-    
+
     # Alert the crew!
     AlertSystem.notify(
       level: :warning,
@@ -303,11 +303,11 @@ class ShieldTelemetry
       retry_after: retry_after
     )
   end
-  
+
   def self.record_failure(shield_name, error_type)
     StatsD.increment("shields.#{shield_name}.failures.#{error_type}")
   end
-  
+
   def self.emit_telemetry(shield_name, state, duration)
     Rails.logger.info({
       event: "shield_telemetry",
@@ -341,13 +341,13 @@ class ShieldControl
   def initialize(breaker)
     @breaker = breaker
   end
-  
+
   # Force shields up (emergency protocol)
   def raise_shields!
     @breaker.trip!
     broadcast_alert("Shields manually raised by command")
   end
-  
+
   # Attempt shield lowering (with safety check)
   def lower_shields!
     if safe_to_lower?
@@ -358,7 +358,7 @@ class ShieldControl
       false
     end
   end
-  
+
   # Shield status report
   def status
     {
@@ -369,17 +369,17 @@ class ShieldControl
       health: calculate_shield_health
     }
   end
-  
+
   private
-  
+
   def safe_to_lower?
     # Check if it's safe to lower shields
     recent_failures = @breaker.stats.failure_count
     time_since_failure = Time.current - (@breaker.last_failure_time || 1.hour.ago)
-    
+
     recent_failures < 2 && time_since_failure > 5.minutes
   end
-  
+
   def calculate_shield_health
     case @breaker.status_name
     when :closed
@@ -390,7 +390,7 @@ class ShieldControl
       "50% - Testing integrity"
     end
   end
-  
+
   def broadcast_alert(message)
     ActionCable.server.broadcast("shield_status", {
       message: message,
@@ -416,7 +416,7 @@ class PaymentShield
       storage: ThrottleMachines.configuration.storage
     )
   end
-  
+
   def process_payment(amount, customer)
     @shield.run do
       # Primary payment processor
@@ -434,11 +434,11 @@ class PaymentShield
       retry_after: e.retry_after,
       reason: "Primary processor shields active"
     )
-    
-    { 
-      queued: true, 
+
+    {
+      queued: true,
       message: "Payment queued for processing",
-      reference: SecureRandom.uuid 
+      reference: SecureRandom.uuid
     }
   end
 end
@@ -454,7 +454,7 @@ class AIServiceShield
       reset_timeout: 120,  # Quick recovery for AI services
       storage: ThrottleMachines.configuration.storage
     )
-    
+
     # Also add rate limiting to prevent abuse
     @rate_limiter = ThrottleMachines.limiter(
       "ai_rate_limit",
@@ -463,7 +463,7 @@ class AIServiceShield
       algorithm: :gcra
     )
   end
-  
+
   def generate_response(prompt)
     # Check rate limit first
     unless @rate_limiter.allowed?
@@ -472,7 +472,7 @@ class AIServiceShield
         retry_after: @rate_limiter.retry_after
       }
     end
-    
+
     # Then check shields
     @shield.run do
       response = OpenAI::Client.new.completions(
@@ -480,7 +480,7 @@ class AIServiceShield
         prompt: prompt,
         max_tokens: 150
       )
-      
+
       # Cache successful responses
       cache_response(prompt, response)
       response
@@ -505,7 +505,7 @@ end
 class ShieldAnalytics
   def self.report(breaker_name)
     breaker = ThrottleMachines.breakers[breaker_name]
-    
+
     {
       current_state: breaker.status_name,
       uptime_percentage: calculate_uptime(breaker),
@@ -514,32 +514,32 @@ class ShieldAnalytics
       protection_events: protection_timeline(breaker)
     }
   end
-  
+
   private
-  
+
   def self.calculate_uptime(breaker)
     total_time = Time.current - breaker.created_at
     open_time = breaker.time_in_open_state
-    
+
     ((total_time - open_time) / total_time * 100).round(2)
   end
-  
+
   def self.calculate_failure_rate(breaker)
     window = 1.hour.ago
     recent_failures = breaker.failures_since(window)
     total_calls = breaker.calls_since(window)
-    
+
     return 0 if total_calls.zero?
     (recent_failures.to_f / total_calls * 100).round(2)
   end
-  
+
   def self.mean_time_to_recovery(breaker)
     recoveries = breaker.recovery_times
     return 0 if recoveries.empty?
-    
+
     (recoveries.sum / recoveries.size).round
   end
-  
+
   def self.protection_timeline(breaker)
     breaker.state_changes.last(10).map do |change|
       {

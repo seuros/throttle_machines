@@ -10,11 +10,10 @@ rails_version = ENV['RAILS_VERSION'] || '8.1'
 
 # Local ecosystem dependencies for development
 gem 'activesupport'
-gem 'breaker_machines'
+gem 'breaker_machines', '~> 0.12'
 gem 'chrono_machines', '>= 0.2.0'
 gem 'minitest'
 gem 'mock_redis', '~> 0.44'
-gem 'pg', '~> 1.5'
 gem 'puma'
 gem 'railties', "~> #{rails_version}.0"
 gem 'rake'
@@ -23,3 +22,7 @@ gem 'rubocop-minitest'
 gem 'rubocop-performance'
 gem 'rubocop-rails'
 gem 'rubocop-rake'
+
+platforms :mri do
+  gem 'pg', '~> 1.5'
+end

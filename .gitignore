@@ -75,6 +75,7 @@ Gemfile.lock
 .rake_tasks~
 
 # Native extension build artifacts
+/lib/throttle_machines_native/
 /ext/**/*.bundle
 /ext/**/*.so
 /ext/**/*.dSYM/
