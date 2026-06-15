@@ -78,6 +78,9 @@ pub fn check(
 /// Peek at the current state without consuming a token.
 ///
 /// This is useful for checking remaining capacity without modifying state.
+/// The computation is pure (it returns the *would-be* state rather than
+/// mutating anything), so it is identical to [`check`]; `new_tokens` reflects
+/// the bucket after a hypothetical consume.
 #[inline]
 pub fn peek(
     tokens: f64,
@@ -86,24 +89,7 @@ pub fn peek(
     capacity: f64,
     refill_rate: f64,
 ) -> TokenBucketResult {
-    let elapsed = now - last_refill;
-    let tokens_to_add = elapsed * refill_rate;
-    let current_tokens = (tokens + tokens_to_add).min(capacity);
-
-    if current_tokens >= 1.0 {
-        TokenBucketResult {
-            allowed: true,
-            new_tokens: current_tokens - 1.0, // What it would be after consuming
-            retry_after: 0.0,
-        }
-    } else {
-        let tokens_needed = 1.0 - current_tokens;
-        TokenBucketResult {
-            allowed: false,
-            new_tokens: current_tokens,
-            retry_after: tokens_needed / refill_rate,
-        }
-    }
+    check(tokens, last_refill, now, capacity, refill_rate)
 }
 
 #[cfg(test)]

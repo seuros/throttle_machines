@@ -2,25 +2,12 @@
 
 module ThrottleMachines
   class RackMiddleware
-    class Blocklist
-      attr_reader :name, :block
+    # Blocks requests matching the configured block (returns true => blocked).
+    class Blocklist < ListFilter
+      private
 
-      def initialize(name, &block)
-        @name = name
-        @block = block
-      end
-
-      def matched_by?(request)
-        return false unless @block
-
-        if @block.call(request)
-          request.env['rack.attack.matched'] = @name
-          request.env['rack.attack.match_type'] = :blocklist
-          ThrottleMachines::RackMiddleware.instrument(request)
-          true
-        else
-          false
-        end
+      def match_type
+        :blocklist
       end
     end
   end

@@ -2,18 +2,7 @@
 
 module ThrottleMachines
   class RackMiddleware
-    class Allow2Ban
-      attr_reader :name, :maxretry, :findtime, :bantime, :block
-
-      def initialize(name, options, &block)
-        @name = name
-        @block = block
-
-        @maxretry = options[:maxretry] || 5
-        @findtime = options[:findtime] || 60
-        @bantime = options[:bantime] || 300
-      end
-
+    class Allow2Ban < BanFilter
       def matched_by?(request)
         discriminator = discriminator_for(request)
         return false unless discriminator
@@ -56,12 +45,6 @@ module ThrottleMachines
         end
 
         false # Allow2Ban never blocks directly
-      end
-
-      private
-
-      def discriminator_for(request)
-        @block.call(request)
       end
     end
   end

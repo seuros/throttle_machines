@@ -2,18 +2,7 @@
 
 module ThrottleMachines
   class RackMiddleware
-    class Fail2Ban
-      attr_reader :name, :maxretry, :findtime, :bantime, :block
-
-      def initialize(name, options, &block)
-        @name = name
-        @block = block
-
-        @maxretry = options[:maxretry] || 5
-        @findtime = options[:findtime] || 60
-        @bantime = options[:bantime] || 300
-      end
-
+    class Fail2Ban < BanFilter
       def banned?(request)
         discriminator = discriminator_for(request)
         return false unless discriminator
@@ -83,12 +72,6 @@ module ThrottleMachines
         rescue StandardError
           # Expected - this records the failure
         end
-      end
-
-      private
-
-      def discriminator_for(request)
-        @block.call(request)
       end
     end
   end

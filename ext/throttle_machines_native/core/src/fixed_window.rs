@@ -48,31 +48,7 @@ pub fn check(
     window_size: f64,
     limit: u64,
 ) -> FixedWindowResult {
-    // Check if window has expired
-    let window_end = window_start + window_size;
-
-    if now >= window_end {
-        // Window expired, start new window
-        FixedWindowResult {
-            allowed: true,
-            new_count: 1,
-            retry_after: 0.0,
-        }
-    } else if count < limit {
-        // Within limit
-        FixedWindowResult {
-            allowed: true,
-            new_count: count + 1,
-            retry_after: 0.0,
-        }
-    } else {
-        // Rate limited
-        FixedWindowResult {
-            allowed: false,
-            new_count: count,
-            retry_after: window_end - now,
-        }
-    }
+    evaluate(count, window_start, now, window_size, limit, 1)
 }
 
 /// Peek at the current state without incrementing the counter.
@@ -84,22 +60,40 @@ pub fn peek(
     window_size: f64,
     limit: u64,
 ) -> FixedWindowResult {
+    evaluate(count, window_start, now, window_size, limit, 0)
+}
+
+/// Shared window evaluation for [`check`] and [`peek`].
+///
+/// `increment` is the amount added to the count when a request is admitted:
+/// `check` passes `1` (consume a slot), `peek` passes `0` (observe only).
+#[inline]
+fn evaluate(
+    count: u64,
+    window_start: f64,
+    now: f64,
+    window_size: f64,
+    limit: u64,
+    increment: u64,
+) -> FixedWindowResult {
     let window_end = window_start + window_size;
 
     if now >= window_end {
-        // Window would expire
+        // Window expired, start a new window
         FixedWindowResult {
             allowed: true,
-            new_count: 0,
+            new_count: increment,
             retry_after: 0.0,
         }
     } else if count < limit {
+        // Within limit
         FixedWindowResult {
             allowed: true,
-            new_count: count,
+            new_count: count + increment,
             retry_after: 0.0,
         }
     } else {
+        // Rate limited
         FixedWindowResult {
             allowed: false,
             new_count: count,
