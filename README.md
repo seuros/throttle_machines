@@ -33,6 +33,9 @@ gem 'redis'
 
 # For planetary Rails integration
 gem 'rails' # or just railties
+
+# For fiber-safe async throttling
+gem 'async'
 ```
 
 Then initialize systems:

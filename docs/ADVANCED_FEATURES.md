@@ -56,9 +56,14 @@ database_shield.reset!(cascade: false) # Reset only primary
 
 ### Quantum Entanglement Communications
 
-For modern Ruby applications using fibers and async/await patterns, ThrottleMachines provides fiber-safe async support.
+For modern Ruby applications using fibers and async/await patterns, ThrottleMachines provides optional fiber-safe async support. Add the `async` gem only when you enable fiber-safe mode.
 
 ```ruby
+ThrottleMachines.configure do |config|
+  config.fiber_safe = true
+  config.default_algorithm = :gcra
+end
+
 # Async-aware rate limiter
 quantum_limiter = ThrottleMachines::AsyncLimiter.new("quantum_comm",
   limit: 1000,
@@ -69,11 +74,11 @@ quantum_limiter = ThrottleMachines::AsyncLimiter.new("quantum_comm",
 # In async context
 Async do
   if quantum_limiter.allowed_async?
-    # Non-blocking operation
+    # Non-consuming availability check
     response = async_api_call
   end
 
-  # Or with automatic retry
+  # Or consume capacity with cooperative retry
   result = quantum_limiter.throttle_async(max_wait: 5) do
     perform_operation
   end
@@ -85,19 +90,20 @@ end
 ```ruby
 async_shield = ThrottleMachines::AsyncBreaker.new("async_service",
   failure_threshold: 3,
-  timeout: 60
+  reset_timeout: 60,
+  fiber_safe: true
 )
 
 # Run async with automatic state management
 Async do
-  result = async_shield.run_async do
+  task = async_shield.call_async do
     fetch_remote_data
   end
 
-  # Fire and forget
-  async_shield.fire_async do
-    send_telemetry_data
-  end
+  result = task.wait
+
+  # Fire a state transition asynchronously
+  async_shield.fire_async(:reset)
 end
 ```
 
@@ -237,9 +243,9 @@ end
 class SmartBackendSelector
   def initialize
     @primary = ThrottleMachines::AsyncBreaker.new("primary_api",
-      failure_threshold: 3, timeout: 60)
+      failure_threshold: 3, reset_timeout: 60, fiber_safe: true)
     @secondary = ThrottleMachines::AsyncBreaker.new("secondary_api",
-      failure_threshold: 5, timeout: 120)
+      failure_threshold: 5, reset_timeout: 120, fiber_safe: true)
     @hedged = ThrottleMachines::HedgedRequest.new(delay: 0.1, max_attempts: 2)
   end
 
@@ -274,7 +280,7 @@ end
 if defined?(Async)
   ThrottleMachines.configure do |config|
     config.default_algorithm = :gcra  # Best for async
-    config.async_enabled = true
+    config.fiber_safe = true
   end
 end
 
