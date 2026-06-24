@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.2](https://github.com/seuros/throttle_machines/compare/throttle_machines/v0.2.1...throttle_machines/v0.2.2) (2026-06-24)
+
+
+### Features
+
+* add native circuit breaker on shared Gate contract ([dee0b57](https://github.com/seuros/throttle_machines/commit/dee0b57b20c7c887c2e7f7e7d7d2e6a5696be118))
+
 ## [0.2.1](https://github.com/seuros/throttle_machines/compare/throttle_machines/v0.2.0...throttle_machines/v0.2.1) (2026-06-24)
 
 
