@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1](https://github.com/seuros/throttle_machines/compare/throttle_machines/v0.2.0...throttle_machines/v0.2.1) (2026-06-24)
+
+
+### Bug Fixes
+
+* add storage-backed async throttling ([09c8125](https://github.com/seuros/throttle_machines/commit/09c8125312dd21fb7a61c469b99faf09764cd75d))
+* add storage-backed async throttling ([12fe6b5](https://github.com/seuros/throttle_machines/commit/12fe6b51631d149f849aeb818f8d6252b5f8eb04))
+
 ## [0.2.0](https://github.com/seuros/throttle_machines/compare/throttle_machines/v0.1.3...throttle_machines/v0.2.0) (2026-05-25)
 
 
