@@ -13,5 +13,5 @@ crate-type = ["cdylib"]
 workspace = true
 
 [dependencies]
-throttle-machines = { path = "../core", version = "0.1" }
+throttle-machines = { workspace = true, features = ["std"] }
 magnus = { version = "0.8.2", features = ["rb-sys"] }

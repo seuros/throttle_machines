@@ -1,5 +1,4 @@
 {
-  "plugins": ["cargo-workspace"],
   "packages": {
     ".": {
       "release-type": "ruby",
@@ -8,8 +7,11 @@
     },
     "ext/throttle_machines_native/core": {
       "release-type": "rust",
-      "package-name": "throttle-machines",
-      "changelog-path": "CHANGELOG.md"
+      "package-name": "throttle-machines"
+    },
+    "ext/throttle_machines_native/ffi": {
+      "release-type": "rust",
+      "package-name": "throttle_machines_native"
     }
   }
 }
