@@ -1,13 +1,13 @@
 [package]
 name = "throttle-machines"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 authors = ["Abdelkader Boudih <terminale@gmail.com>"]
 license = "MIT"
-description = "Rate limiting algorithms: GCRA, token bucket, fixed window"
+description = "Rate limiting (GCRA, token bucket, fixed window) and circuit breaker on a shared no_std gate contract"
 repository = "https://github.com/seuros/throttle_machines"
 readme = "README.md"
-keywords = ["rate-limiting", "throttling", "gcra", "token-bucket"]
+keywords = ["rate-limiting", "throttling", "gcra", "circuit-breaker", "token-bucket"]
 categories = ["algorithms"]
 
 [lib]

@@ -1,9 +1,15 @@
 {
+  "plugins": ["cargo-workspace"],
   "packages": {
     ".": {
       "release-type": "ruby",
       "package-name": "throttle_machines",
       "bump-patch-for-minor-pre-major": true
+    },
+    "ext/throttle_machines_native/core": {
+      "release-type": "rust",
+      "package-name": "throttle-machines",
+      "changelog-path": "CHANGELOG.md"
     }
   }
 }
