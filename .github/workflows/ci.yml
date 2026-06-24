@@ -7,45 +7,175 @@ on:
 
   pull_request:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  build:
+  # Test the Rust crate independently
+  test-rust-crate:
     runs-on: ubuntu-latest
-    name: Rails ${{ matrix.rails }}
+    name: Rust Crate Tests
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@1.96
+
+      - name: Cache Rust dependencies
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build Rust crate
+        run: |
+          echo "::group::Building Rust crate"
+          time cargo build --release
+          echo "::endgroup::"
+
+      - name: Run Rust tests
+        run: |
+          echo "::group::Running Rust tests"
+          time cargo test --workspace
+          echo "::endgroup::"
+
+      - name: Check crate can be published
+        run: |
+          cd ext/throttle_machines_native/core
+          cargo package --allow-dirty
+
+  # Test with pure Ruby backend (no native extension)
+  test-ruby:
+    runs-on: ubuntu-latest
+    name: Ruby ${{ matrix.ruby }} / Rails ${{ matrix.rails }} (Pure Ruby)
+    continue-on-error: ${{ matrix.experimental || false }}
     strategy:
       fail-fast: false
       matrix:
+        ruby:
+          - "3.4"
+          - "4.0"
         rails:
           - "8.0"
           - "8.1"
+        include:
+          - ruby: "3.4"
+            rails: "edge"
+            experimental: true
+          - ruby: "4.0"
+            rails: "edge"
+            experimental: true
     env:
       RAILS_VERSION: ${{ matrix.rails }}
       RAILS_ENV: test
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
+
       - name: Set up Ruby
         uses: ruby/setup-ruby@v1
         with:
-          ruby-version: "3.4"
+          ruby-version: ${{ matrix.ruby }}
           bundler-cache: true
 
-      - name: Run tests
-        run: bin/rails test
+      - name: Run tests (Pure Ruby)
+        run: |
+          echo "::group::Running tests with Pure Ruby backend"
+          time bin/rails test
+          echo "::endgroup::"
 
-  test-ruby-4:
+      - name: Verify pure Ruby mode
+        run: |
+          bundle exec ruby -Ilib -e "
+            require 'throttle_machines'
+            if ThrottleMachines::Storage::Memory.ancestors.any? { |m| m.name.to_s.include?('Native') }
+              puts '❌ ERROR: Native extension should not be available'
+              exit 1
+            else
+              puts '✅ Pure Ruby backend active'
+            end
+          "
+
+  # Test with native FFI backend
+  test-native:
     runs-on: ubuntu-latest
-    name: Ruby 4.0 / Rails 8.1
+    name: Ruby ${{ matrix.ruby }} / Rails ${{ matrix.rails }} (Native FFI)
+    continue-on-error: ${{ matrix.experimental || false }}
+    strategy:
+      fail-fast: false
+      matrix:
+        ruby:
+          - "3.4"
+          - "4.0"
+        rails:
+          - "8.0"
+          - "8.1"
+        include:
+          - ruby: "3.4"
+            rails: "edge"
+            experimental: true
+          - ruby: "4.0"
+            rails: "edge"
+            experimental: true
     env:
-      RAILS_VERSION: "8.1"
+      RAILS_VERSION: ${{ matrix.rails }}
       RAILS_ENV: test
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@1.96
+
+      - name: Cache Rust dependencies
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            ext/throttle_machines_native/target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
       - name: Set up Ruby
         uses: ruby/setup-ruby@v1
         with:
-          ruby-version: "4.0"
+          ruby-version: ${{ matrix.ruby }}
           bundler-cache: true
 
-      - name: Run tests
-        run: bin/rails test
+      - name: Build native extension
+        run: |
+          echo "::group::Building native extension"
+          cd ext/throttle_machines_native
+          bundle exec ruby extconf.rb
+          make
+          mkdir -p throttle_machines_native
+          cp throttle_machines_native.* throttle_machines_native/ 2>/dev/null || true
+          cd ../..
+          echo "::endgroup::"
+
+      - name: Run tests (Native FFI)
+        run: |
+          echo "::group::Running tests with Native FFI backend"
+          time ruby -Ilib:ext/throttle_machines_native bin/rails test
+          echo "::endgroup::"
+
+      - name: Verify native mode
+        run: |
+          bundle exec ruby -Ilib:ext/throttle_machines_native -e "
+            require 'throttle_machines'
+            if ThrottleMachines::Storage::Memory.ancestors.any? { |m| m.name.to_s.include?('Native') }
+              puts '✅ Native FFI backend active'
+            else
+              puts '❌ ERROR: Native extension should be available'
+              exit 1
+            end
+          "
