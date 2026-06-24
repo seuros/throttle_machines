@@ -1,153 +1,168 @@
-//! Fixed Window rate limiting algorithm.
-//!
-//! The fixed window algorithm counts requests within a time window.
-//! When the window expires, the counter resets. Simple but can allow
-//! bursts at window boundaries.
+//! Fixed window: count requests per window; reset when it expires. Simple, but
+//! allows bursts at window boundaries.
 
-/// Result of a fixed window rate limit check.
+use crate::gate::{Decision, Gate};
+
+/// Fixed window state.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct FixedWindowResult {
-    /// Whether the request is allowed.
-    pub allowed: bool,
-    /// Current count after this check.
-    pub new_count: u64,
-    /// Seconds until the window resets (0 if allowed and not at limit).
-    pub retry_after: f64,
+pub struct FixedWindowState {
+    /// Request count in the current window.
+    pub count: u64,
+    /// Timestamp the current window started.
+    pub window_start: f64,
 }
 
-/// Check if a request is allowed under the fixed window algorithm.
-///
-/// # Arguments
-///
-/// * `count` - Current request count in the window
-/// * `window_start` - Timestamp when the current window started
-/// * `now` - Current timestamp in seconds
-/// * `window_size` - Duration of the window in seconds
-/// * `limit` - Maximum requests allowed per window
-///
-/// # Returns
-///
-/// A `FixedWindowResult` indicating whether the request is allowed,
-/// the new count, and time until window reset if rate limited.
-///
-/// # Example
-///
-/// ```
-/// use throttle_machines::fixed_window;
-///
-/// // 10 requests per 60 second window
-/// let result = fixed_window::check(0, 0.0, 1.0, 60.0, 10);
-/// assert!(result.allowed);
-/// assert_eq!(result.new_count, 1);
-/// ```
-#[inline]
-pub fn check(
-    count: u64,
-    window_start: f64,
-    now: f64,
-    window_size: f64,
-    limit: u64,
-) -> FixedWindowResult {
-    evaluate(count, window_start, now, window_size, limit, 1)
+/// Fixed window configuration.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FixedWindowParams {
+    /// Window duration, in seconds.
+    pub window_size: f64,
+    /// Maximum requests per window.
+    pub limit: u64,
 }
 
-/// Peek at the current state without incrementing the counter.
-#[inline]
-pub fn peek(
-    count: u64,
-    window_start: f64,
-    now: f64,
-    window_size: f64,
-    limit: u64,
-) -> FixedWindowResult {
-    evaluate(count, window_start, now, window_size, limit, 0)
-}
+/// Fixed window gate.
+pub struct FixedWindow;
 
-/// Shared window evaluation for [`check`] and [`peek`].
-///
-/// `increment` is the amount added to the count when a request is admitted:
-/// `check` passes `1` (consume a slot), `peek` passes `0` (observe only).
-#[inline]
-fn evaluate(
-    count: u64,
-    window_start: f64,
-    now: f64,
-    window_size: f64,
-    limit: u64,
-    increment: u64,
-) -> FixedWindowResult {
-    let window_end = window_start + window_size;
+impl FixedWindow {
+    /// Shared evaluation: `increment` is 1 for `check`, 0 for `peek`.
+    #[inline]
+    fn evaluate(
+        state: FixedWindowState,
+        now: f64,
+        params: FixedWindowParams,
+        increment: u64,
+    ) -> Decision<FixedWindowState> {
+        let window_end = state.window_start + params.window_size;
 
-    if now >= window_end {
-        // Window expired, start a new window
-        FixedWindowResult {
-            allowed: true,
-            new_count: increment,
-            retry_after: 0.0,
+        if now >= window_end {
+            Decision {
+                allowed: true,
+                state: FixedWindowState {
+                    count: increment,
+                    window_start: now,
+                },
+                retry_after: 0.0,
+            }
+        } else if state.count < params.limit {
+            Decision {
+                allowed: true,
+                state: FixedWindowState {
+                    count: state.count + increment,
+                    window_start: state.window_start,
+                },
+                retry_after: 0.0,
+            }
+        } else {
+            Decision {
+                allowed: false,
+                state,
+                retry_after: window_end - now,
+            }
         }
-    } else if count < limit {
-        // Within limit
-        FixedWindowResult {
-            allowed: true,
-            new_count: count + increment,
-            retry_after: 0.0,
-        }
-    } else {
-        // Rate limited
-        FixedWindowResult {
-            allowed: false,
-            new_count: count,
-            retry_after: window_end - now,
-        }
+    }
+
+    /// Remaining requests in the current window.
+    #[inline]
+    pub fn remaining(count: u64, limit: u64) -> u64 {
+        limit.saturating_sub(count)
     }
 }
 
-/// Calculate remaining requests in the current window.
-#[inline]
-pub fn remaining(count: u64, limit: u64) -> u64 {
-    limit.saturating_sub(count)
+impl Gate for FixedWindow {
+    type State = FixedWindowState;
+    type Params = FixedWindowParams;
+
+    /// ```
+    /// use throttle_machines::gate::Gate;
+    /// use throttle_machines::fixed_window::{FixedWindow, FixedWindowParams, FixedWindowState};
+    /// let state = FixedWindowState { count: 0, window_start: 0.0 };
+    /// let params = FixedWindowParams { window_size: 60.0, limit: 10 };
+    /// let result = FixedWindow::check(state, 1.0, params);
+    /// assert!(result.allowed);
+    /// assert_eq!(result.state.count, 1);
+    /// ```
+    #[inline]
+    fn check(
+        state: FixedWindowState,
+        now: f64,
+        params: FixedWindowParams,
+    ) -> Decision<FixedWindowState> {
+        Self::evaluate(state, now, params, 1)
+    }
+
+    #[inline]
+    fn peek(
+        state: FixedWindowState,
+        now: f64,
+        params: FixedWindowParams,
+    ) -> Decision<FixedWindowState> {
+        Self::evaluate(state, now, params, 0)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    const LIMIT10_60S: FixedWindowParams = FixedWindowParams {
+        window_size: 60.0,
+        limit: 10,
+    };
+
     #[test]
     fn test_first_request_allowed() {
-        let result = check(0, 0.0, 1.0, 60.0, 10);
+        let state = FixedWindowState {
+            count: 0,
+            window_start: 0.0,
+        };
+        let result = FixedWindow::check(state, 1.0, LIMIT10_60S);
         assert!(result.allowed);
-        assert_eq!(result.new_count, 1);
+        assert_eq!(result.state.count, 1);
         assert_eq!(result.retry_after, 0.0);
     }
 
     #[test]
     fn test_at_limit_denied() {
-        let result = check(10, 0.0, 30.0, 60.0, 10);
+        let state = FixedWindowState {
+            count: 10,
+            window_start: 0.0,
+        };
+        let result = FixedWindow::check(state, 30.0, LIMIT10_60S);
         assert!(!result.allowed);
-        assert_eq!(result.new_count, 10);
+        assert_eq!(result.state.count, 10);
         assert!((result.retry_after - 30.0).abs() < 0.0001);
     }
 
     #[test]
     fn test_window_reset() {
-        // Window started at 0, size 60, now at 61 (past window)
-        let result = check(10, 0.0, 61.0, 60.0, 10);
+        // Window started at 0, size 60, now 61 (past window).
+        let state = FixedWindowState {
+            count: 10,
+            window_start: 0.0,
+        };
+        let result = FixedWindow::check(state, 61.0, LIMIT10_60S);
         assert!(result.allowed);
-        assert_eq!(result.new_count, 1);
+        assert_eq!(result.state.count, 1);
+        assert_eq!(result.state.window_start, 61.0);
     }
 
     #[test]
     fn test_remaining() {
-        assert_eq!(remaining(0, 10), 10);
-        assert_eq!(remaining(5, 10), 5);
-        assert_eq!(remaining(10, 10), 0);
-        assert_eq!(remaining(15, 10), 0); // Over limit
+        assert_eq!(FixedWindow::remaining(0, 10), 10);
+        assert_eq!(FixedWindow::remaining(5, 10), 5);
+        assert_eq!(FixedWindow::remaining(10, 10), 0);
+        assert_eq!(FixedWindow::remaining(15, 10), 0);
     }
 
     #[test]
     fn test_peek_does_not_increment() {
-        let result = peek(5, 0.0, 30.0, 60.0, 10);
+        let state = FixedWindowState {
+            count: 5,
+            window_start: 0.0,
+        };
+        let result = FixedWindow::peek(state, 30.0, LIMIT10_60S);
         assert!(result.allowed);
-        assert_eq!(result.new_count, 5); // Not incremented
+        assert_eq!(result.state.count, 5);
     }
 }

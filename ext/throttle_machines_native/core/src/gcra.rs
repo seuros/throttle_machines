@@ -1,81 +1,61 @@
-//! Generic Cell Rate Algorithm (GCRA) implementation.
-//!
-//! GCRA provides smooth, precise rate limiting by tracking a "Theoretical Arrival Time" (TAT).
-//! Each request advances the TAT by an emission interval, and requests are allowed
-//! only if the current time is close enough to the TAT.
+//! Generic Cell Rate Algorithm (GCRA): smooth rate limiting via a Theoretical
+//! Arrival Time (TAT) advanced by an emission interval per request.
 
-/// Result of a GCRA rate limit check.
+use crate::gate::{Decision, Gate};
+
+/// GCRA configuration.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct GcraResult {
-    /// Whether the request is allowed.
-    pub allowed: bool,
-    /// The new Theoretical Arrival Time after this check.
-    pub new_tat: f64,
-    /// Seconds until the next request would be allowed (0 if allowed).
-    pub retry_after: f64,
+pub struct GcraParams {
+    /// Time between allowed requests (period / limit).
+    pub emission_interval: f64,
+    /// Extra time allowed for bursting (0 for none).
+    pub delay_tolerance: f64,
 }
 
-/// Check if a request is allowed under GCRA.
-///
-/// # Arguments
-///
-/// * `tat` - Current Theoretical Arrival Time (0.0 for first request)
-/// * `now` - Current timestamp in seconds
-/// * `emission_interval` - Time between allowed requests (period / limit)
-/// * `delay_tolerance` - Extra time allowed for bursting (0 for no burst)
-///
-/// # Returns
-///
-/// A `GcraResult` indicating whether the request is allowed and the new TAT.
-///
-/// # Example
-///
-/// ```
-/// use throttle_machines::gcra;
-///
-/// // Allow 10 requests per second (emission_interval = 0.1)
-/// let result = gcra::check(0.0, 1.0, 0.1, 0.0);
-/// assert!(result.allowed);
-/// ```
-#[inline]
-pub fn check(tat: f64, now: f64, emission_interval: f64, delay_tolerance: f64) -> GcraResult {
-    // TAT should be at least `now` (can't be in the past)
-    let new_tat = tat.max(now);
+/// GCRA gate. State is the TAT (`0.0` for the first request).
+pub struct Gcra;
 
-    // How far ahead is the TAT from now?
-    let diff = new_tat - now;
+impl Gate for Gcra {
+    type State = f64;
+    type Params = GcraParams;
 
-    // Allow if we're within the tolerance window
-    let allowed = diff <= delay_tolerance;
+    /// ```
+    /// use throttle_machines::gate::Gate;
+    /// use throttle_machines::gcra::{Gcra, GcraParams};
+    /// let params = GcraParams { emission_interval: 0.1, delay_tolerance: 0.0 };
+    /// assert!(Gcra::check(0.0, 1.0, params).allowed);
+    /// ```
+    #[inline]
+    fn check(tat: f64, now: f64, params: GcraParams) -> Decision<f64> {
+        let new_tat = tat.max(now);
+        let diff = new_tat - now;
 
-    if allowed {
-        GcraResult {
-            allowed: true,
-            new_tat: new_tat + emission_interval,
-            retry_after: 0.0,
-        }
-    } else {
-        GcraResult {
-            allowed: false,
-            new_tat,
-            retry_after: diff - delay_tolerance,
+        if diff <= params.delay_tolerance {
+            Decision {
+                allowed: true,
+                state: new_tat + params.emission_interval,
+                retry_after: 0.0,
+            }
+        } else {
+            Decision {
+                allowed: false,
+                state: new_tat,
+                retry_after: diff - params.delay_tolerance,
+            }
         }
     }
-}
 
-/// Peek at the current state without consuming a request.
-///
-/// This is useful for checking remaining capacity without modifying state.
-#[inline]
-pub fn peek(tat: f64, now: f64, delay_tolerance: f64) -> GcraResult {
-    let effective_tat = tat.max(now);
-    let diff = effective_tat - now;
-    let allowed = diff <= delay_tolerance;
+    #[inline]
+    fn peek(tat: f64, now: f64, params: GcraParams) -> Decision<f64> {
+        let effective_tat = tat.max(now);
+        let diff = effective_tat - now;
+        let allowed = diff <= params.delay_tolerance;
 
-    GcraResult {
-        allowed,
-        new_tat: effective_tat,
-        retry_after: if allowed { 0.0 } else { diff - delay_tolerance },
+        Decision {
+            allowed,
+            state: effective_tat,
+            retry_after: if allowed { 0.0 } else { diff - params.delay_tolerance },
+        }
     }
 }
 
@@ -83,60 +63,62 @@ pub fn peek(tat: f64, now: f64, delay_tolerance: f64) -> GcraResult {
 mod tests {
     use super::*;
 
+    const NO_BURST: GcraParams = GcraParams {
+        emission_interval: 0.1,
+        delay_tolerance: 0.0,
+    };
+
     #[test]
     fn test_first_request_allowed() {
-        let result = check(0.0, 1.0, 0.1, 0.0);
+        let result = Gcra::check(0.0, 1.0, NO_BURST);
         assert!(result.allowed);
-        assert!((result.new_tat - 1.1).abs() < 0.0001);
+        assert!((result.state - 1.1).abs() < 0.0001);
         assert_eq!(result.retry_after, 0.0);
     }
 
     #[test]
     fn test_rate_limited_when_too_fast() {
-        // First request at t=1.0
-        let r1 = check(0.0, 1.0, 0.1, 0.0);
+        let r1 = Gcra::check(0.0, 1.0, NO_BURST);
         assert!(r1.allowed);
 
-        // Second request immediately at t=1.0 (too fast)
-        let r2 = check(r1.new_tat, 1.0, 0.1, 0.0);
+        // Second request immediately (too fast).
+        let r2 = Gcra::check(r1.state, 1.0, NO_BURST);
         assert!(!r2.allowed);
         assert!(r2.retry_after > 0.0);
     }
 
     #[test]
     fn test_allowed_after_waiting() {
-        // First request
-        let r1 = check(0.0, 1.0, 0.1, 0.0);
-
-        // Second request after waiting
-        let r2 = check(r1.new_tat, 1.15, 0.1, 0.0);
+        let r1 = Gcra::check(0.0, 1.0, NO_BURST);
+        let r2 = Gcra::check(r1.state, 1.15, NO_BURST);
         assert!(r2.allowed);
     }
 
     #[test]
     fn test_burst_with_delay_tolerance() {
-        // With delay_tolerance of 0.25 and emission_interval of 0.1,
-        // we can allow 3 bursts before being rate limited.
-        // Using 0.25 instead of 0.2 to avoid floating point edge cases.
-        let r1 = check(0.0, 1.0, 0.1, 0.25);
+        // tolerance 0.25, interval 0.1 -> 3 bursts before limiting.
+        let burst = GcraParams {
+            emission_interval: 0.1,
+            delay_tolerance: 0.25,
+        };
+        let r1 = Gcra::check(0.0, 1.0, burst);
         assert!(r1.allowed);
 
-        let r2 = check(r1.new_tat, 1.0, 0.1, 0.25);
+        let r2 = Gcra::check(r1.state, 1.0, burst);
         assert!(r2.allowed);
 
-        let r3 = check(r2.new_tat, 1.0, 0.1, 0.25);
+        let r3 = Gcra::check(r2.state, 1.0, burst);
         assert!(r3.allowed);
 
-        // Fourth request exceeds burst (diff ~= 0.3 > 0.25)
-        let r4 = check(r3.new_tat, 1.0, 0.1, 0.25);
+        // Fourth exceeds burst (diff ~= 0.3 > 0.25).
+        let r4 = Gcra::check(r3.state, 1.0, burst);
         assert!(!r4.allowed);
     }
 
     #[test]
     fn test_peek_does_not_modify() {
-        let result = peek(0.0, 1.0, 0.0);
+        let result = Gcra::peek(0.0, 1.0, NO_BURST);
         assert!(result.allowed);
-        // new_tat should be `now`, not advanced
-        assert!((result.new_tat - 1.0).abs() < 0.0001);
+        assert!((result.state - 1.0).abs() < 0.0001);
     }
 }
