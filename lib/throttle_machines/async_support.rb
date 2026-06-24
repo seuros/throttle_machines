@@ -2,33 +2,74 @@
 
 # Async/Fiber support for ThrottleMachines.
 #
-# This module is automatically loaded when the Async gem is available.
-# It prepends fiber-aware sleep onto Limiter for cooperative scheduling.
-
-return unless defined?(Async)
+# The async gem is optional. When an Async task is active, waits yield back to
+# the scheduler; otherwise the limiter falls back to normal sleep.
 
 module ThrottleMachines
-  # Fiber-aware sleep support for rate limiting.
+  # Fiber-aware rate limiter helpers.
   module AsyncSupport
+    def allowed_async?
+      allow?
+    end
+
+    alias allow_async? allowed_async?
+
+    def check_async
+      return false unless allowed_async?
+
+      yield if block_given?
+      true
+    end
+
+    def throttle_async(max_wait: nil, &block)
+      deadline = max_wait.nil? ? nil : ThrottleMachines.monotonic_time + max_wait.to_f
+
+      loop do
+        begin
+          throttle!
+        rescue ThrottledError => e
+          wait_time = [e.retry_after.to_f, 0.0].max
+
+          if deadline
+            remaining_wait = deadline - ThrottleMachines.monotonic_time
+            raise if remaining_wait <= 0 || wait_time > remaining_wait
+          end
+
+          sleep_for(wait_time)
+          next
+        end
+
+        return block.call if block
+
+        return true
+      end
+    end
+
     private
 
-    # Override sleep to use Async's fiber-aware sleep when in an async context.
+    # Use Async's fiber-aware sleep when in an async context.
     def sleep_for(duration)
-      task = begin
-        Async::Task.current
-      rescue StandardError
-        nil
-      end
-
-      if task
+      if (task = current_async_task)
         task.sleep(duration)
       else
-        super
+        sleep(duration)
       end
+    end
+
+    def current_async_task
+      return nil unless defined?(::Async::Task)
+
+      if ::Async::Task.respond_to?(:current?)
+        ::Async::Task.current?
+      else
+        ::Async::Task.current
+      end
+    rescue StandardError
+      nil
     end
   end
 end
 
-ThrottleMachines::Limiter.prepend(ThrottleMachines::AsyncSupport)
+ThrottleMachines::Limiter.include(ThrottleMachines::AsyncSupport)
 
-warn "[ThrottleMachines] Async support loaded" if ENV["DEBUG_MATRYOSHKA"]
+warn "[ThrottleMachines] Async support loaded" if ENV['DEBUG_MATRYOSHKA']

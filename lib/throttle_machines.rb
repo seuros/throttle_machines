@@ -17,17 +17,32 @@ loader.setup
 module ThrottleMachines
   class Configuration
     attr_accessor :default_limit, :default_period, :default_storage, :clock,
-                  :instrumentation_enabled, :instrumentation_backend, :_storage_instance
+                  :default_algorithm, :instrumentation_enabled, :instrumentation_backend,
+                  :_storage_instance
 
     def initialize
       @default_limit = 100
       @default_period = 60 # 1 minute
       @default_storage = :memory
+      @default_algorithm = :fixed_window
       @clock = nil
       @instrumentation_enabled = true
       @instrumentation_backend = nil
+      @fiber_safe = false
       @_storage_instance = nil
     end
+
+    def fiber_safe
+      @fiber_safe
+    end
+
+    def fiber_safe=(value)
+      @fiber_safe = !!value
+      ThrottleMachines.load_async_runtime! if @fiber_safe && ThrottleMachines.respond_to?(:load_async_runtime!)
+    end
+
+    alias async_enabled fiber_safe
+    alias async_enabled= fiber_safe=
   end
 
   @config = Configuration.new
@@ -46,6 +61,7 @@ module ThrottleMachines
       # Apply instrumentation settings
       Instrumentation.enabled = config.instrumentation_enabled
       Instrumentation.backend = config.instrumentation_backend if config.instrumentation_backend
+      load_async_runtime! if config.fiber_safe
     end
 
     def storage
@@ -75,7 +91,7 @@ module ThrottleMachines
       control
     end
 
-    def limit(key, limit:, period:, algorithm: :fixed_window, &block)
+    def limit(key, limit:, period:, algorithm: nil, &block)
       limiter = limiter(key, limit: limit, period: period, algorithm: algorithm)
       limiter.throttle!(&block)
     end
@@ -99,8 +115,28 @@ module ThrottleMachines
       ChronoMachines.retry(policy_options, &block)
     end
 
-    def limiter(key, limit:, period:, algorithm: :fixed_window)
-      Limiter.new(key, limit: limit, period: period, algorithm: algorithm, storage: storage)
+    def limiter(key, limit:, period:, algorithm: nil)
+      Limiter.new(
+        key,
+        limit: limit,
+        period: period,
+        algorithm: algorithm || config.default_algorithm,
+        storage: storage
+      )
+    end
+
+    def async_breaker(...)
+      ThrottleMachines::AsyncBreaker.new(...)
+    end
+
+    def load_async_runtime!
+      require 'async'
+      require 'async/task'
+      true
+    rescue LoadError => e
+      raise unless e.message.include?('async')
+
+      raise LoadError, "The 'async' gem is required for fiber_safe mode. Add `gem 'async'` to your Gemfile."
     end
 
     private
