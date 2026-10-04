@@ -27,11 +27,6 @@ else
   gem 'railties', "~> #{rails_version}.0"
 end
 gem 'rake'
-gem 'rubocop'
-gem 'rubocop-minitest'
-gem 'rubocop-performance'
-gem 'rubocop-rails'
-gem 'rubocop-rake'
 
 platforms :mri do
   gem 'pg', '~> 1.5'

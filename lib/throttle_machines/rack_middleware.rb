@@ -35,11 +35,9 @@ module ThrottleMachines
         @configuration.instance_eval(&block) if block
       end
 
-      # rubocop:disable Rails/Delegate -- Ruby 3.4 compatibility issue with delegate
       def reset!
         ThrottleMachines.reset!
       end
-      # rubocop:enable Rails/Delegate
 
       def clear!
         @configuration = Configuration.new
