@@ -26,9 +26,9 @@ begin
             state = @gcra_states[key] || { tat: 0.0 }
 
             # Rust does the math
-            allowed, new_tat, retry_after = ThrottleMachinesNative.gcra_check(
+            ThrottleMachinesNative.gcra_check(
               state[:tat], now, emission_interval, delay_tolerance
-            )
+            ) => { allowed:, state: new_tat, retry_after: }
 
             @gcra_states[key] = { tat: new_tat, expires_at: now + ttl } if allowed
 
@@ -42,9 +42,9 @@ begin
             state = @gcra_states[key] || { tat: 0.0 }
 
             # Rust does the math
-            allowed, tat, retry_after = ThrottleMachinesNative.gcra_peek(
+            ThrottleMachinesNative.gcra_peek(
               state[:tat], now, delay_tolerance
-            )
+            ) => { allowed:, state: tat, retry_after: }
 
             { allowed: allowed, retry_after: retry_after, tat: tat }
           end
@@ -59,9 +59,9 @@ begin
             bucket = @token_buckets[key] || { tokens: capacity, last_refill: now }
 
             # Rust does the math
-            allowed, new_tokens, retry_after = ThrottleMachinesNative.token_bucket_check(
+            ThrottleMachinesNative.token_bucket_check(
               bucket[:tokens], bucket[:last_refill], now, capacity, refill_rate
-            )
+            ) => { allowed:, state: new_tokens, retry_after: }
 
             if allowed
               @token_buckets[key] = { tokens: new_tokens, last_refill: now, expires_at: now + ttl }
@@ -77,9 +77,9 @@ begin
             bucket = @token_buckets[key] || { tokens: capacity, last_refill: now }
 
             # Rust does the math
-            allowed, tokens, retry_after = ThrottleMachinesNative.token_bucket_peek(
+            ThrottleMachinesNative.token_bucket_peek(
               bucket[:tokens], bucket[:last_refill], now, capacity, refill_rate
-            )
+            ) => { allowed:, state: tokens, retry_after: }
 
             { allowed: allowed, retry_after: retry_after, tokens_remaining: tokens.floor }
           end
