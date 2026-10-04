@@ -20,14 +20,8 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Set up Rust
-        uses: dtolnay/rust-toolchain@1.96
-
-      # The FFI crate links the Ruby it finds; Data classes need Ruby >= 3.3.
-      - name: Set up Ruby
-        uses: ruby/setup-ruby@v1
-        with:
-          ruby-version: "4.0"
+      - name: Set up toolchain (mise)
+        uses: jdx/mise-action@v5
 
       - name: Cache Rust dependencies
         uses: actions/cache@v6
@@ -76,16 +70,24 @@ jobs:
             experimental: true
     env:
       RAILS_VERSION: ${{ matrix.rails }}
+      MISE_RUBY_VERSION: ${{ matrix.ruby }}
+      BUNDLE_PATH: vendor/bundle
       RAILS_ENV: test
 
     steps:
       - uses: actions/checkout@v7
 
-      - name: Set up Ruby
-        uses: ruby/setup-ruby@v1
+      - name: Set up toolchain (mise)
+        uses: jdx/mise-action@v5
+
+      - name: Cache gems
+        uses: actions/cache@v6
         with:
-          ruby-version: ${{ matrix.ruby }}
-          bundler-cache: true
+          path: vendor/bundle
+          key: ${{ runner.os }}-gems-${{ matrix.ruby }}-${{ matrix.rails }}-${{ hashFiles('Gemfile', '*.gemspec') }}
+
+      - name: Install gems
+        run: bundle install --jobs 4
 
       - name: Run tests (Pure Ruby)
         run: |
@@ -124,13 +126,15 @@ jobs:
             experimental: true
     env:
       RAILS_VERSION: ${{ matrix.rails }}
+      MISE_RUBY_VERSION: ${{ matrix.ruby }}
+      BUNDLE_PATH: vendor/bundle
       RAILS_ENV: test
 
     steps:
       - uses: actions/checkout@v7
 
-      - name: Set up Rust
-        uses: dtolnay/rust-toolchain@1.96
+      - name: Set up toolchain (mise)
+        uses: jdx/mise-action@v5
 
       - name: Cache Rust dependencies
         uses: actions/cache@v6
@@ -143,11 +147,14 @@ jobs:
             ext/throttle_machines_native/target/
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Set up Ruby
-        uses: ruby/setup-ruby@v1
+      - name: Cache gems
+        uses: actions/cache@v6
         with:
-          ruby-version: ${{ matrix.ruby }}
-          bundler-cache: true
+          path: vendor/bundle
+          key: ${{ runner.os }}-gems-${{ matrix.ruby }}-${{ matrix.rails }}-${{ hashFiles('Gemfile', '*.gemspec') }}
+
+      - name: Install gems
+        run: bundle install --jobs 4
 
       - name: Build native extension
         run: |
