@@ -31,7 +31,7 @@ jobs:
           pre-script: rustup toolchain install 1.99 --profile minimal --target "$RUST_TARGET" && rustup default 1.99
 
       - name: Upload native gem artifact
-        uses: actions/upload-artifact@v8
+        uses: actions/upload-artifact@v7
         with:
           name: native-gem-${{ github.event.inputs.platform }}
           path: pkg/*-${{ github.event.inputs.platform }}.gem
