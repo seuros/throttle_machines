@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.3](https://github.com/seuros/throttle_machines/compare/throttle_machines/v0.2.2...throttle_machines/v0.2.3) (2026-10-06)
+
+
+### Features
+
+* require Ruby 4.0, magnus 0.9, Ractor-safe ext with Data results ([448ecd6](https://github.com/seuros/throttle_machines/commit/448ecd6674c5be744cc92b44d368a46552d48161))
+
+
+### Bug Fixes
+
+* **build:** skip host compile when packaging a cross gem ([2becc31](https://github.com/seuros/throttle_machines/commit/2becc317c51e2f047ee3053a0a179db78c93225e))
+* **ci:** build Rust crates against Ruby 4.0 ([3a69957](https://github.com/seuros/throttle_machines/commit/3a699577ec16ef6655bf6e382012b91bd22a914a))
+* **deps:** pin breaker_machines ~&gt; 0.18, chrono_machines ~&gt; 0.9 ([17e1d60](https://github.com/seuros/throttle_machines/commit/17e1d60a4b19cdf5622093accf2290615f2aaed7))
+
 ## [0.2.2](https://github.com/seuros/throttle_machines/compare/throttle_machines/v0.2.1...throttle_machines/v0.2.2) (2026-06-24)
 
 
