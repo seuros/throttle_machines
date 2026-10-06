@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/seuros/throttle_machines/compare/throttle_machines_native-v0.2.0...throttle_machines_native-v0.3.0) (2026-10-06)
+
+
+### Features
+
+* require Ruby 4.0, magnus 0.9, Ractor-safe ext with Data results ([448ecd6](https://github.com/seuros/throttle_machines/commit/448ecd6674c5be744cc92b44d368a46552d48161))
+
 ## [0.2.0](https://github.com/seuros/throttle_machines/compare/throttle_machines_native-v0.1.0...throttle_machines_native-v0.2.0) (2026-06-24)
 
 
