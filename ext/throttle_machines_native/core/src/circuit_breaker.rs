@@ -7,6 +7,8 @@
 //! `Closed -> Open` (failures reach threshold), `Open -> HalfOpen` (cooldown
 //! elapses, one probe), `HalfOpen -> Closed` (probe ok) / `-> Open` (probe fails).
 
+use core::fmt;
+
 use crate::gate::{Decision, Gate};
 
 /// Circuit state. FFI encoding: `Closed = 0`, `Open = 1`, `HalfOpen = 2`.
@@ -23,24 +25,55 @@ pub enum CircuitState {
 impl CircuitState {
     /// Encode as a stable `u8` for the FFI boundary.
     #[inline]
-    pub fn to_u8(self) -> u8 {
+    #[must_use]
+    pub const fn to_u8(self) -> u8 {
         match self {
-            CircuitState::Closed => 0,
-            CircuitState::Open => 1,
-            CircuitState::HalfOpen => 2,
+            Self::Closed => 0,
+            Self::Open => 1,
+            Self::HalfOpen => 2,
         }
     }
 
-    /// Decode from `u8`; unknown values fail open to `Closed`.
+    /// Decode from `u8`; unknown values fail open to `Closed`. Use
+    /// [`CircuitState::try_from`] to reject them instead.
     #[inline]
-    pub fn from_u8(value: u8) -> CircuitState {
+    #[must_use]
+    pub fn from_u8(value: u8) -> Self {
+        Self::try_from(value).unwrap_or(Self::Closed)
+    }
+}
+
+impl TryFrom<u8> for CircuitState {
+    type Error = InvalidCircuitState;
+
+    /// Strict decode of the FFI encoding: unknown values are an error.
+    #[inline]
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
         match value {
-            1 => CircuitState::Open,
-            2 => CircuitState::HalfOpen,
-            _ => CircuitState::Closed,
+            0 => Ok(Self::Closed),
+            1 => Ok(Self::Open),
+            2 => Ok(Self::HalfOpen),
+            _ => Err(InvalidCircuitState(value)),
         }
     }
 }
+
+/// A `u8` that is not a [`CircuitState`] encoding, from
+/// [`CircuitState::try_from`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InvalidCircuitState(pub u8);
+
+impl fmt::Display for InvalidCircuitState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "invalid circuit state encoding {} (expected 0, 1 or 2)",
+            self.0
+        )
+    }
+}
+
+impl core::error::Error for InvalidCircuitState {}
 
 /// Breaker state.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -132,7 +165,7 @@ impl Gate for CircuitBreaker {
 impl CircuitBreaker {
     /// Shared "allowed, state unchanged" decision for Closed/HalfOpen.
     #[inline]
-    fn allow(state: BreakerState) -> Decision<BreakerState> {
+    const fn allow(state: BreakerState) -> Decision<BreakerState> {
         Decision {
             allowed: true,
             state,
@@ -141,8 +174,8 @@ impl CircuitBreaker {
     }
 
     /// Fold a call outcome into the state. Success closes/resets; failure in
-    /// HalfOpen (or Open) re-trips, and in Closed trips once failures reach
-    /// `failure_threshold`.
+    /// `HalfOpen` (or `Open`) re-trips, and in `Closed` trips once failures
+    /// reach `failure_threshold`.
     ///
     /// ```
     /// use throttle_machines::circuit_breaker::{CircuitBreaker, CircuitState};
@@ -151,7 +184,8 @@ impl CircuitBreaker {
     /// assert_eq!(r.opened_at, 5.0);
     /// ```
     #[inline]
-    pub fn record(
+    #[must_use]
+    pub const fn record(
         state: CircuitState,
         failures: u32,
         now: f64,
@@ -193,101 +227,4 @@ impl CircuitBreaker {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    const RESET30: BreakerParams = BreakerParams { reset_timeout: 30.0 };
-
-    fn breaker(state: CircuitState, opened_at: f64) -> BreakerState {
-        BreakerState { state, opened_at }
-    }
-
-    #[test]
-    fn test_state_u8_roundtrip() {
-        for s in [
-            CircuitState::Closed,
-            CircuitState::Open,
-            CircuitState::HalfOpen,
-        ] {
-            assert_eq!(CircuitState::from_u8(s.to_u8()), s);
-        }
-        assert_eq!(CircuitState::from_u8(99), CircuitState::Closed);
-    }
-
-    #[test]
-    fn test_closed_allows() {
-        let r = CircuitBreaker::check(breaker(CircuitState::Closed, 0.0), 1.0, RESET30);
-        assert!(r.allowed);
-        assert_eq!(r.state.state, CircuitState::Closed);
-        assert_eq!(r.retry_after, 0.0);
-    }
-
-    #[test]
-    fn test_failures_trip_breaker() {
-        let r1 = CircuitBreaker::record(CircuitState::Closed, 0, 1.0, false, 3);
-        assert_eq!(r1.new_state, CircuitState::Closed);
-        assert_eq!(r1.new_failures, 1);
-
-        let r2 = CircuitBreaker::record(CircuitState::Closed, r1.new_failures, 2.0, false, 3);
-        assert_eq!(r2.new_state, CircuitState::Closed);
-        assert_eq!(r2.new_failures, 2);
-
-        let r3 = CircuitBreaker::record(CircuitState::Closed, r2.new_failures, 3.0, false, 3);
-        assert_eq!(r3.new_state, CircuitState::Open);
-        assert_eq!(r3.new_failures, 3);
-        assert_eq!(r3.opened_at, 3.0);
-    }
-
-    #[test]
-    fn test_success_resets_failures() {
-        let r = CircuitBreaker::record(CircuitState::Closed, 2, 5.0, true, 3);
-        assert_eq!(r.new_state, CircuitState::Closed);
-        assert_eq!(r.new_failures, 0);
-    }
-
-    #[test]
-    fn test_open_denies_before_cooldown() {
-        let r = CircuitBreaker::check(breaker(CircuitState::Open, 10.0), 20.0, RESET30);
-        assert!(!r.allowed);
-        assert_eq!(r.state.state, CircuitState::Open);
-        assert!((r.retry_after - 20.0).abs() < 0.0001);
-    }
-
-    #[test]
-    fn test_open_transitions_to_half_open_after_cooldown() {
-        let r = CircuitBreaker::check(breaker(CircuitState::Open, 10.0), 41.0, RESET30);
-        assert!(r.allowed);
-        assert_eq!(r.state.state, CircuitState::HalfOpen);
-        assert_eq!(r.retry_after, 0.0);
-    }
-
-    #[test]
-    fn test_half_open_probe_success_closes() {
-        let r = CircuitBreaker::record(CircuitState::HalfOpen, 3, 50.0, true, 3);
-        assert_eq!(r.new_state, CircuitState::Closed);
-        assert_eq!(r.new_failures, 0);
-    }
-
-    #[test]
-    fn test_half_open_probe_failure_reopens() {
-        let r = CircuitBreaker::record(CircuitState::HalfOpen, 3, 50.0, false, 3);
-        assert_eq!(r.new_state, CircuitState::Open);
-        assert_eq!(r.opened_at, 50.0);
-    }
-
-    #[test]
-    fn test_peek_does_not_transition_open() {
-        let r = CircuitBreaker::peek(breaker(CircuitState::Open, 10.0), 41.0, RESET30);
-        assert!(r.allowed);
-        assert_eq!(r.state.state, CircuitState::Open);
-        assert_eq!(r.retry_after, 0.0);
-    }
-
-    #[test]
-    fn test_peek_reports_remaining_cooldown() {
-        let r = CircuitBreaker::peek(breaker(CircuitState::Open, 10.0), 20.0, RESET30);
-        assert!(!r.allowed);
-        assert_eq!(r.state.state, CircuitState::Open);
-        assert!((r.retry_after - 20.0).abs() < 0.0001);
-    }
-}
+mod tests;

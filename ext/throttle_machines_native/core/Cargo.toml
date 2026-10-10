@@ -2,6 +2,7 @@
 name = "throttle-machines"
 version = "0.2.0"
 edition = "2024"
+rust-version.workspace = true
 authors = ["Abdelkader Boudih <terminale@gmail.com>"]
 license = "MIT"
 description = "Rate limiting (GCRA, token bucket, fixed window) and circuit breaker on a shared no_std gate contract"

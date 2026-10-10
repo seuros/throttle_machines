@@ -54,71 +54,14 @@ impl Gate for Gcra {
         Decision {
             allowed,
             state: effective_tat,
-            retry_after: if allowed { 0.0 } else { diff - params.delay_tolerance },
+            retry_after: if allowed {
+                0.0
+            } else {
+                diff - params.delay_tolerance
+            },
         }
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    const NO_BURST: GcraParams = GcraParams {
-        emission_interval: 0.1,
-        delay_tolerance: 0.0,
-    };
-
-    #[test]
-    fn test_first_request_allowed() {
-        let result = Gcra::check(0.0, 1.0, NO_BURST);
-        assert!(result.allowed);
-        assert!((result.state - 1.1).abs() < 0.0001);
-        assert_eq!(result.retry_after, 0.0);
-    }
-
-    #[test]
-    fn test_rate_limited_when_too_fast() {
-        let r1 = Gcra::check(0.0, 1.0, NO_BURST);
-        assert!(r1.allowed);
-
-        // Second request immediately (too fast).
-        let r2 = Gcra::check(r1.state, 1.0, NO_BURST);
-        assert!(!r2.allowed);
-        assert!(r2.retry_after > 0.0);
-    }
-
-    #[test]
-    fn test_allowed_after_waiting() {
-        let r1 = Gcra::check(0.0, 1.0, NO_BURST);
-        let r2 = Gcra::check(r1.state, 1.15, NO_BURST);
-        assert!(r2.allowed);
-    }
-
-    #[test]
-    fn test_burst_with_delay_tolerance() {
-        // tolerance 0.25, interval 0.1 -> 3 bursts before limiting.
-        let burst = GcraParams {
-            emission_interval: 0.1,
-            delay_tolerance: 0.25,
-        };
-        let r1 = Gcra::check(0.0, 1.0, burst);
-        assert!(r1.allowed);
-
-        let r2 = Gcra::check(r1.state, 1.0, burst);
-        assert!(r2.allowed);
-
-        let r3 = Gcra::check(r2.state, 1.0, burst);
-        assert!(r3.allowed);
-
-        // Fourth exceeds burst (diff ~= 0.3 > 0.25).
-        let r4 = Gcra::check(r3.state, 1.0, burst);
-        assert!(!r4.allowed);
-    }
-
-    #[test]
-    fn test_peek_does_not_modify() {
-        let result = Gcra::peek(0.0, 1.0, NO_BURST);
-        assert!(result.allowed);
-        assert!((result.state - 1.0).abs() < 0.0001);
-    }
-}
+mod tests;

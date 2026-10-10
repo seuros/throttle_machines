@@ -4,11 +4,11 @@
 //! (`Data.define(:allowed, :state, :retry_after)`); breaker outcome records
 //! return a `ThrottleMachinesNative::Outcome`
 //! (`Data.define(:state, :failures, :opened_at)`). Both are frozen and hold
-//! only immediates, so they are Ractor-shareable, and the extension itself
-//! is marked Ractor-safe.
+//! only shareable values (booleans, integers, floats), so they are
+//! Ractor-shareable, and the extension itself is marked Ractor-safe.
 
 use magnus::value::Opaque;
-use magnus::{Error, IntoValue, RClass, Ruby, Value, function, kwargs, prelude::*};
+use magnus::{Error, IntoValue, RClass, RStruct, Ruby, Value, function, prelude::*};
 use std::sync::OnceLock;
 use throttle_machines::circuit_breaker::{BreakerParams, BreakerState, CircuitState};
 use throttle_machines::fixed_window::{FixedWindowParams, FixedWindowState};
@@ -22,6 +22,11 @@ static DECISION: OnceLock<Opaque<RClass>> = OnceLock::new();
 /// `ThrottleMachinesNative::Outcome`, defined once in `init`.
 static OUTCOME: OnceLock<Opaque<RClass>> = OnceLock::new();
 
+/// `Decision` members, in the order [`decision`] fills them.
+const DECISION_MEMBERS: (&str, &str, &str) = ("allowed", "state", "retry_after");
+/// `Outcome` members, in the order [`circuit_breaker_record`] fills them.
+const OUTCOME_MEMBERS: (&str, &str, &str) = ("state", "failures", "opened_at");
+
 fn data_class(ruby: &Ruby, class: &OnceLock<Opaque<RClass>>) -> Result<RClass, Error> {
     class
         .get()
@@ -34,6 +39,28 @@ fn data_class(ruby: &Ruby, class: &OnceLock<Opaque<RClass>>) -> Result<RClass, E
         })
 }
 
+/// Instantiate one of our `Data` classes from its member values, in
+/// declaration order, allocating nothing but the instance itself.
+///
+/// `Data#initialize` takes keywords only, so `new_instance` would need a
+/// temporary `Hash` per call, plus a temporary `String` per key while magnus
+/// interns it to a `Symbol`. Allocating, filling the members by position and
+/// freezing is everything `Data#initialize` does, and yields an instance that
+/// is `==`/`eql?` to the keyword-built one, frozen and Ractor-shareable. Both
+/// classes are defined here, with no `initialize` override to skip.
+fn new_data<const N: usize>(
+    ruby: &Ruby,
+    class: &OnceLock<Opaque<RClass>>,
+    members: [Value; N],
+) -> Result<Value, Error> {
+    let instance = RStruct::try_convert(data_class(ruby, class)?.obj_alloc()?)?;
+    for (index, value) in members.into_iter().enumerate() {
+        instance.aset(index, value)?;
+    }
+    instance.freeze();
+    Ok(instance.as_value())
+}
+
 /// Build a `Decision`. `state` is the algorithm's next state: a TAT, token
 /// count, window count, or encoded breaker state.
 fn decision(
@@ -42,13 +69,15 @@ fn decision(
     state: impl IntoValue,
     retry_after: f64,
 ) -> Result<Value, Error> {
-    // Data#initialize takes keywords only; `Data.new`'s positional form is
-    // bypassed by rb_class_new_instance.
-    data_class(ruby, &DECISION)?.new_instance((kwargs!(
-        "allowed" => allowed,
-        "state" => state,
-        "retry_after" => retry_after
-    ),))
+    new_data(
+        ruby,
+        &DECISION,
+        [
+            ruby.into_value(allowed),
+            ruby.into_value(state),
+            ruby.into_value(retry_after),
+        ],
+    )
 }
 
 /// GCRA rate limit check.
@@ -167,13 +196,13 @@ fn fixed_window_peek(
 }
 
 /// Fixed window remaining calculation.
-fn fixed_window_remaining(count: u64, limit: u64) -> u64 {
+const fn fixed_window_remaining(count: u64, limit: u64) -> u64 {
     FixedWindow::remaining(count, limit)
 }
 
 /// Circuit breaker admission check.
 ///
-/// `state` is encoded as Closed = 0, Open = 1, HalfOpen = 2.
+/// `state` is encoded as `Closed = 0`, `Open = 1`, `HalfOpen = 2`.
 fn circuit_breaker_check(
     ruby: &Ruby,
     state: u8,
@@ -235,11 +264,15 @@ fn circuit_breaker_record(
         success,
         failure_threshold,
     );
-    data_class(ruby, &OUTCOME)?.new_instance((kwargs!(
-        "state" => result.new_state.to_u8(),
-        "failures" => result.new_failures,
-        "opened_at" => result.opened_at
-    ),))
+    new_data(
+        ruby,
+        &OUTCOME,
+        [
+            ruby.into_value(result.new_state.to_u8()),
+            ruby.into_value(result.new_failures),
+            ruby.into_value(result.opened_at),
+        ],
+    )
 }
 
 /// Define a `Data` class under `module` and remember it for the functions.
@@ -264,24 +297,15 @@ fn define_data_class(
 fn init(ruby: &Ruby) -> Result<(), Error> {
     // Must precede every method definition: Ruby marks methods Ractor-safe as
     // they are defined. The only globals are the write-once class slots.
+    #[allow(unsafe_code)]
     // SAFETY: called on the loading thread during extension initialisation.
-    unsafe { rb_sys::rb_ext_ractor_safe(true) };
+    unsafe {
+        rb_sys::rb_ext_ractor_safe(true);
+    }
 
     let module = ruby.define_module("ThrottleMachinesNative")?;
-    define_data_class(
-        ruby,
-        module,
-        &DECISION,
-        "Decision",
-        ("allowed", "state", "retry_after"),
-    )?;
-    define_data_class(
-        ruby,
-        module,
-        &OUTCOME,
-        "Outcome",
-        ("state", "failures", "opened_at"),
-    )?;
+    define_data_class(ruby, module, &DECISION, "Decision", DECISION_MEMBERS)?;
+    define_data_class(ruby, module, &OUTCOME, "Outcome", OUTCOME_MEMBERS)?;
 
     // GCRA functions
     module.define_singleton_method("gcra_check", function!(gcra_check, 4))?;

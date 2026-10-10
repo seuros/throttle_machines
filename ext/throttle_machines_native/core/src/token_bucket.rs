@@ -44,6 +44,13 @@ impl Gate for TokenBucket {
         params: TokenBucketParams,
     ) -> Decision<TokenBucketState> {
         let elapsed = now - state.last_refill;
+        // `allow`, not `expect`: clippy only suggests `mul_add` when std is linked.
+        #[allow(
+            clippy::suboptimal_flops,
+            reason = "`mul_add` is std-only (breaks no_std), and fusing would change the \
+                      rounding that the Ruby and Redis backends' \
+                      `tokens + elapsed * refill_rate` produce"
+        )]
         let refilled = (state.tokens + elapsed * params.refill_rate).min(params.capacity);
 
         if refilled >= 1.0 {
@@ -80,82 +87,4 @@ impl Gate for TokenBucket {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    const CAP10_RATE1: TokenBucketParams = TokenBucketParams {
-        capacity: 10.0,
-        refill_rate: 1.0,
-    };
-
-    #[test]
-    fn test_full_bucket_allows() {
-        let state = TokenBucketState {
-            tokens: 10.0,
-            last_refill: 0.0,
-        };
-        let result = TokenBucket::check(state, 1.0, CAP10_RATE1);
-        assert!(result.allowed);
-        assert!((result.state.tokens - 9.0).abs() < 0.0001);
-    }
-
-    #[test]
-    fn test_empty_bucket_denies() {
-        let state = TokenBucketState {
-            tokens: 0.0,
-            last_refill: 0.0,
-        };
-        let result = TokenBucket::check(state, 0.0, CAP10_RATE1);
-        assert!(!result.allowed);
-        assert!(result.retry_after > 0.0);
-    }
-
-    #[test]
-    fn test_refill_over_time() {
-        let state = TokenBucketState {
-            tokens: 0.0,
-            last_refill: 0.0,
-        };
-        let result = TokenBucket::check(state, 5.0, CAP10_RATE1);
-        assert!(result.allowed);
-        assert!((result.state.tokens - 4.0).abs() < 0.0001);
-    }
-
-    #[test]
-    fn test_capacity_cap() {
-        let state = TokenBucketState {
-            tokens: 10.0,
-            last_refill: 0.0,
-        };
-        let result = TokenBucket::check(state, 100.0, CAP10_RATE1);
-        assert!(result.allowed);
-        assert!((result.state.tokens - 9.0).abs() < 0.0001);
-    }
-
-    #[test]
-    fn test_retry_after_calculation() {
-        // 0.5 tokens, need 0.5 more at 2/sec -> 0.25s.
-        let state = TokenBucketState {
-            tokens: 0.5,
-            last_refill: 1.0,
-        };
-        let params = TokenBucketParams {
-            capacity: 10.0,
-            refill_rate: 2.0,
-        };
-        let result = TokenBucket::check(state, 1.0, params);
-        assert!(!result.allowed);
-        assert!((result.retry_after - 0.25).abs() < 0.0001);
-    }
-
-    #[test]
-    fn test_peek_does_not_consume() {
-        let state = TokenBucketState {
-            tokens: 5.0,
-            last_refill: 0.0,
-        };
-        let result = TokenBucket::peek(state, 1.0, CAP10_RATE1);
-        assert!(result.allowed);
-        assert!((result.state.tokens - 5.0).abs() < 0.0001);
-    }
-}
+mod tests;

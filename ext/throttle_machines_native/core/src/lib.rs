@@ -18,7 +18,12 @@ pub mod gate;
 pub mod gcra;
 pub mod token_bucket;
 
-pub use circuit_breaker::{BreakerParams, BreakerState, CircuitBreaker, CircuitState, RecordResult};
+#[cfg(test)]
+mod test_support;
+
+pub use circuit_breaker::{
+    BreakerParams, BreakerState, CircuitBreaker, CircuitState, InvalidCircuitState, RecordResult,
+};
 pub use fixed_window::{FixedWindow, FixedWindowParams, FixedWindowState};
 pub use gate::{Decision, Gate};
 pub use gcra::{Gcra, GcraParams};

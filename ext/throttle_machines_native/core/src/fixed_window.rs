@@ -64,7 +64,8 @@ impl FixedWindow {
 
     /// Remaining requests in the current window.
     #[inline]
-    pub fn remaining(count: u64, limit: u64) -> u64 {
+    #[must_use]
+    pub const fn remaining(count: u64, limit: u64) -> u64 {
         limit.saturating_sub(count)
     }
 }
@@ -102,67 +103,4 @@ impl Gate for FixedWindow {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    const LIMIT10_60S: FixedWindowParams = FixedWindowParams {
-        window_size: 60.0,
-        limit: 10,
-    };
-
-    #[test]
-    fn test_first_request_allowed() {
-        let state = FixedWindowState {
-            count: 0,
-            window_start: 0.0,
-        };
-        let result = FixedWindow::check(state, 1.0, LIMIT10_60S);
-        assert!(result.allowed);
-        assert_eq!(result.state.count, 1);
-        assert_eq!(result.retry_after, 0.0);
-    }
-
-    #[test]
-    fn test_at_limit_denied() {
-        let state = FixedWindowState {
-            count: 10,
-            window_start: 0.0,
-        };
-        let result = FixedWindow::check(state, 30.0, LIMIT10_60S);
-        assert!(!result.allowed);
-        assert_eq!(result.state.count, 10);
-        assert!((result.retry_after - 30.0).abs() < 0.0001);
-    }
-
-    #[test]
-    fn test_window_reset() {
-        // Window started at 0, size 60, now 61 (past window).
-        let state = FixedWindowState {
-            count: 10,
-            window_start: 0.0,
-        };
-        let result = FixedWindow::check(state, 61.0, LIMIT10_60S);
-        assert!(result.allowed);
-        assert_eq!(result.state.count, 1);
-        assert_eq!(result.state.window_start, 61.0);
-    }
-
-    #[test]
-    fn test_remaining() {
-        assert_eq!(FixedWindow::remaining(0, 10), 10);
-        assert_eq!(FixedWindow::remaining(5, 10), 5);
-        assert_eq!(FixedWindow::remaining(10, 10), 0);
-        assert_eq!(FixedWindow::remaining(15, 10), 0);
-    }
-
-    #[test]
-    fn test_peek_does_not_increment() {
-        let state = FixedWindowState {
-            count: 5,
-            window_start: 0.0,
-        };
-        let result = FixedWindow::peek(state, 30.0, LIMIT10_60S);
-        assert!(result.allowed);
-        assert_eq!(result.state.count, 5);
-    }
-}
+mod tests;
