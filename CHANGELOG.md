@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.4](https://github.com/seuros/throttle_machines/compare/throttle_machines/v0.2.3...throttle_machines/v0.2.4) (2026-10-10)
+
+
+### Bug Fixes
+
+* **ci:** attach release gems with gh release upload ([dd3ece4](https://github.com/seuros/throttle_machines/commit/dd3ece4a402e8b088b25648c6c786cce03832593))
+* **ci:** use upload-artifact@v7; v8 does not exist ([e535e25](https://github.com/seuros/throttle_machines/commit/e535e255424179a13b7639db82cc691afdf9faf1))
+* **deps:** pin breaker_machines ~&gt; 0.19 ([7621b67](https://github.com/seuros/throttle_machines/commit/7621b6718d9a93696a748464255e3f44d9a50738))
+
+
+### Performance Improvements
+
+* **ffi:** build Decision/Outcome without a kwargs hash; adopt clippy pedantic and nursery ([23c263d](https://github.com/seuros/throttle_machines/commit/23c263da35829a9375397abaae807659ca96a1ac))
+
 ## [0.2.3](https://github.com/seuros/throttle_machines/compare/throttle_machines/v0.2.2...throttle_machines/v0.2.3) (2026-10-06)
 
 

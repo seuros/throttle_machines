@@ -1,5 +1,5 @@
 {
-  ".": "0.2.3",
-  "ext/throttle_machines_native/core": "0.2.0",
-  "ext/throttle_machines_native/ffi": "0.3.0"
+  ".": "0.2.4",
+  "ext/throttle_machines_native/core": "0.2.1",
+  "ext/throttle_machines_native/ffi": "0.3.1"
 }
