@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/seuros/throttle_machines/compare/throttle-machines-v0.2.0...throttle-machines-v0.2.1) (2026-10-10)
+
+
+### Performance Improvements
+
+* **ffi:** build Decision/Outcome without a kwargs hash; adopt clippy pedantic and nursery ([23c263d](https://github.com/seuros/throttle_machines/commit/23c263da35829a9375397abaae807659ca96a1ac))
+
 ## [0.2.0](https://github.com/seuros/throttle_machines/compare/throttle-machines-v0.2.0...throttle-machines-v0.2.0) (2026-06-24)
 
 
