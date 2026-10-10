@@ -1,41 +1,49 @@
 # throttle-machines
 
-High-performance rate limiting algorithms for Rust.
+Rate limiting and circuit breaking as pure functions over caller-held state.
+No clocks, no locks, no allocation: you store the state, pass it in with the
+current time, and get a decision plus the next state back.
 
 ## Algorithms
 
-- **GCRA** (Generic Cell Rate Algorithm) - Smooth, precise per-request timing
-- **Token Bucket** - Allows burst capacity with steady refill rate
-- **Fixed Window** - Simple counter with TTL in current window
+Every algorithm implements the [`Gate`] trait (`check` consumes, `peek` doesn't):
+
+- **GCRA** (Generic Cell Rate Algorithm): smooth, precise per-request spacing.
+- **Token Bucket**: burst capacity with a steady refill rate.
+- **Fixed Window**: a counter per window.
+- **Circuit Breaker**: closed / open / half-open admission, with `record` to
+  fold call outcomes back in.
 
 ## Usage
 
 ```rust
-use throttle_machines::gcra;
+use throttle_machines::gate::Gate;
+use throttle_machines::gcra::{Gcra, GcraParams};
 
-let result = gcra::check(
-    0.0,    // current TAT (Theoretical Arrival Time)
-    1.0,    // current time
-    0.1,    // emission_interval (period / limit)
-    0.0,    // delay_tolerance (for burst allowance)
-);
+// 10 requests per second, no burst allowance.
+let params = GcraParams { emission_interval: 0.1, delay_tolerance: 0.0 };
 
-if result.allowed {
-    println!("Request allowed, new TAT: {}", result.new_tat);
-} else {
-    println!("Rate limited, retry after: {}s", result.retry_after);
-}
+let mut tat = 0.0; // Theoretical Arrival Time, stored by the caller
+let first = Gcra::check(tat, 1.0, params);
+assert!(first.allowed);
+tat = first.state;
+
+let second = Gcra::check(tat, 1.0, params);
+assert!(!second.allowed);
+assert!(second.retry_after > 0.0);
 ```
 
-## no_std Support
+## no_std
 
-This crate is `no_std` compatible when the `std` feature is disabled:
+The crate is `no_std` with the default `std` feature disabled:
 
 ```toml
 [dependencies]
-throttle-machines = { version = "0.1", default-features = false }
+throttle-machines = { version = "0.2", default-features = false }
 ```
 
 ## License
 
 MIT
+
+[`Gate`]: https://docs.rs/throttle-machines/latest/throttle_machines/gate/trait.Gate.html

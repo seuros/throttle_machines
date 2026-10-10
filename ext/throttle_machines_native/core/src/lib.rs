@@ -21,6 +21,11 @@ pub mod token_bucket;
 #[cfg(test)]
 mod test_support;
 
+/// Compiles and runs the README's examples as doctests.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct ReadmeDoctests;
+
 pub use circuit_breaker::{
     BreakerParams, BreakerState, CircuitBreaker, CircuitState, InvalidCircuitState, RecordResult,
 };
