@@ -3,6 +3,7 @@
     ".": {
       "release-type": "ruby",
       "package-name": "throttle_machines",
+      "bump-minor-pre-major": true,
       "bump-patch-for-minor-pre-major": true
     },
     "ext/throttle_machines_native/core": {
