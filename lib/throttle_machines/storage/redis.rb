@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require 'digest/sha1'
+
 module ThrottleMachines
   module Storage
     class Redis < Base
@@ -13,16 +15,17 @@ module ThrottleMachines
       INCREMENT_COUNTER_SCRIPT = File.read(File.join(LUA_SCRIPTS_DIR, 'increment_counter.lua'))
       # Breaker scripts removed: breaker state is owned by BreakerMachines
 
+      # Redis caches scripts by the SHA1 of their source, so the SHAs are known
+      # without a SCRIPT LOAD round trip.
+      GCRA_SHA = Digest::SHA1.hexdigest(GCRA_SCRIPT)
+      TOKEN_BUCKET_SHA = Digest::SHA1.hexdigest(TOKEN_BUCKET_SCRIPT)
+      PEEK_GCRA_SHA = Digest::SHA1.hexdigest(PEEK_GCRA_SCRIPT)
+      PEEK_TOKEN_BUCKET_SHA = Digest::SHA1.hexdigest(PEEK_TOKEN_BUCKET_SCRIPT)
+
       def initialize(options = {})
         super
         @redis = options[:redis] || options[:client] || options[:pool]
         @prefix = options[:prefix] || 'throttle:'
-
-        # Cache scripts to avoid repeated script loads
-        @gcra_sha = nil
-        @token_bucket_sha = nil
-        @peek_gcra_sha = nil
-        @peek_token_bucket_sha = nil
 
         # Validate Redis connection
         validate_redis_connection!
@@ -56,15 +59,9 @@ module ThrottleMachines
 
       # GCRA operations (atomic via Lua)
       def check_gcra_limit(key, emission_interval, delay_tolerance, ttl)
-        ensure_gcra_script_loaded!
-
-        result = with_redis do |redis|
-          redis.evalsha(
-            @gcra_sha,
-            keys: [prefixed(key)],
-            argv: [emission_interval, delay_tolerance, ttl, current_time]
-          )
-        end
+        result = run_script(GCRA_SCRIPT, GCRA_SHA,
+                            keys: [prefixed(key)],
+                            argv: [emission_interval, delay_tolerance, ttl, current_time])
 
         allowed = result[0] == 1
         tat = result[1]
@@ -75,24 +72,13 @@ module ThrottleMachines
           retry_after: allowed ? 0 : (tat - now - delay_tolerance),
           tat: tat
         }
-      rescue ::Redis::CommandError => e
-        raise unless e.message.include?('NOSCRIPT')
-
-        @gcra_sha = nil
-        retry
       end
 
       # Token bucket operations (atomic via Lua)
       def check_token_bucket(key, capacity, refill_rate, ttl)
-        ensure_token_bucket_script_loaded!
-
-        result = with_redis do |redis|
-          redis.evalsha(
-            @token_bucket_sha,
-            keys: [prefixed(key)],
-            argv: [capacity, refill_rate, ttl, current_time]
-          )
-        end
+        result = run_script(TOKEN_BUCKET_SCRIPT, TOKEN_BUCKET_SHA,
+                            keys: [prefixed(key)],
+                            argv: [capacity, refill_rate, ttl, current_time])
 
         allowed = result[0] == 1
         tokens = result[1]
@@ -102,24 +88,13 @@ module ThrottleMachines
           retry_after: allowed ? 0 : (1 - tokens) / refill_rate,
           tokens_remaining: tokens.floor
         }
-      rescue ::Redis::CommandError => e
-        raise unless e.message.include?('NOSCRIPT')
-
-        @token_bucket_sha = nil
-        retry
       end
 
       # Peek methods for non-consuming checks
       def peek_gcra_limit(key, emission_interval, delay_tolerance)
-        ensure_peek_gcra_script_loaded!
-
-        result = with_redis do |redis|
-          redis.evalsha(
-            @peek_gcra_sha,
-            keys: [prefixed(key)],
-            argv: [emission_interval, delay_tolerance, current_time]
-          )
-        end
+        result = run_script(PEEK_GCRA_SCRIPT, PEEK_GCRA_SHA,
+                            keys: [prefixed(key)],
+                            argv: [emission_interval, delay_tolerance, current_time])
 
         allowed = result[0] == 1
         tat = result[1]
@@ -130,23 +105,12 @@ module ThrottleMachines
           retry_after: allowed ? 0 : (tat - now - delay_tolerance),
           tat: tat
         }
-      rescue ::Redis::CommandError => e
-        raise unless e.message.include?('NOSCRIPT')
-
-        @peek_gcra_sha = nil
-        retry
       end
 
       def peek_token_bucket(key, capacity, refill_rate)
-        ensure_peek_token_bucket_script_loaded!
-
-        result = with_redis do |redis|
-          redis.evalsha(
-            @peek_token_bucket_sha,
-            keys: [prefixed(key)],
-            argv: [capacity, refill_rate, current_time]
-          )
-        end
+        result = run_script(PEEK_TOKEN_BUCKET_SCRIPT, PEEK_TOKEN_BUCKET_SHA,
+                            keys: [prefixed(key)],
+                            argv: [capacity, refill_rate, current_time])
 
         allowed = result[0] == 1
         tokens_remaining = result[1]
@@ -156,11 +120,6 @@ module ThrottleMachines
           retry_after: allowed ? 0 : (1 - tokens_remaining) / refill_rate,
           tokens_remaining: tokens_remaining.floor
         }
-      rescue ::Redis::CommandError => e
-        raise unless e.message.include?('NOSCRIPT')
-
-        @peek_token_bucket_sha = nil
-        retry
       end
 
       # No circuit breaker operations: breaker state is owned by BreakerMachines
@@ -192,20 +151,17 @@ module ThrottleMachines
         "#{@prefix}#{key}"
       end
 
-      def ensure_gcra_script_loaded!
-        @gcra_sha ||= with_redis { |r| r.script(:load, GCRA_SCRIPT) }
-      end
+      # EVALSHA by the precomputed SHA. A server without the script cached (a
+      # restart, SCRIPT FLUSH, failover) answers NOSCRIPT; EVAL then runs the
+      # source once and caches it for later calls. Any other error propagates.
+      def run_script(script, sha, keys:, argv:)
+        with_redis do |redis|
+          redis.evalsha(sha, keys: keys, argv: argv)
+        rescue ::Redis::CommandError => e
+          raise unless e.message.include?('NOSCRIPT')
 
-      def ensure_token_bucket_script_loaded!
-        @token_bucket_sha ||= with_redis { |r| r.script(:load, TOKEN_BUCKET_SCRIPT) }
-      end
-
-      def ensure_peek_gcra_script_loaded!
-        @peek_gcra_sha ||= with_redis { |r| r.script(:load, PEEK_GCRA_SCRIPT) }
-      end
-
-      def ensure_peek_token_bucket_script_loaded!
-        @peek_token_bucket_sha ||= with_redis { |r| r.script(:load, PEEK_TOKEN_BUCKET_SCRIPT) }
+          redis.eval(script, keys: keys, argv: argv)
+        end
       end
 
       def validate_redis_connection!
