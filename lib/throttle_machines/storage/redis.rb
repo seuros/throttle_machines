@@ -193,19 +193,19 @@ module ThrottleMachines
       end
 
       def ensure_gcra_script_loaded!
-        @ensure_gcra_script_loaded ||= with_redis { |r| r.script(:load, GCRA_SCRIPT) }
+        @gcra_sha ||= with_redis { |r| r.script(:load, GCRA_SCRIPT) }
       end
 
       def ensure_token_bucket_script_loaded!
-        @ensure_token_bucket_script_loaded ||= with_redis { |r| r.script(:load, TOKEN_BUCKET_SCRIPT) }
+        @token_bucket_sha ||= with_redis { |r| r.script(:load, TOKEN_BUCKET_SCRIPT) }
       end
 
       def ensure_peek_gcra_script_loaded!
-        @ensure_peek_gcra_script_loaded ||= with_redis { |r| r.script(:load, PEEK_GCRA_SCRIPT) }
+        @peek_gcra_sha ||= with_redis { |r| r.script(:load, PEEK_GCRA_SCRIPT) }
       end
 
       def ensure_peek_token_bucket_script_loaded!
-        @ensure_peek_token_bucket_script_loaded ||= with_redis { |r| r.script(:load, PEEK_TOKEN_BUCKET_SCRIPT) }
+        @peek_token_bucket_sha ||= with_redis { |r| r.script(:load, PEEK_TOKEN_BUCKET_SCRIPT) }
       end
 
       def validate_redis_connection!
