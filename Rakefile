@@ -2,11 +2,23 @@
 
 require 'bundler/gem_tasks'
 require 'rake/testtask'
+require 'shellwords'
 
-Rake::TestTask.new(:test) do |t|
+# Plain Minitest runner. JRuby and TruffleRuby use it for `rake test`.
+Rake::TestTask.new(:minitest) do |t|
   t.libs << 'test'
   t.test_files = FileList['test/**/*_test.rb'].exclude('test/dummy/**/*')
   t.verbose = false
+end
+
+# padded_cell runs each test in its own forked cell; it needs CRuby.
+desc 'Run the test suite (padded_cell on CRuby, plain Minitest elsewhere)'
+if RUBY_ENGINE == 'ruby'
+  task :test do
+    sh 'padded_cell', *Shellwords.split(ENV.fetch('TESTOPTS', ''))
+  end
+else
+  task test: :minitest
 end
 
 GEMSPEC = Gem::Specification.load('throttle_machines.gemspec')

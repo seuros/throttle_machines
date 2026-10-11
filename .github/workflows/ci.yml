@@ -62,7 +62,6 @@ jobs:
         ruby:
           - "4.0"
         rails:
-          - "8.0"
           - "8.1"
         include:
           - ruby: "4.0"
@@ -92,8 +91,12 @@ jobs:
       - name: Run tests (Pure Ruby)
         run: |
           echo "::group::Running tests with Pure Ruby backend"
-          time bin/rails test
+          time bundle exec rake test TESTOPTS=--coverage
           echo "::endgroup::"
+
+      - name: Coverage summary
+        if: always() && hashFiles('coverage/coverage.md') != ''
+        run: cat coverage/coverage.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Verify pure Ruby mode
         run: |
@@ -118,7 +121,6 @@ jobs:
         ruby:
           - "4.0"
         rails:
-          - "8.0"
           - "8.1"
         include:
           - ruby: "4.0"
@@ -170,7 +172,7 @@ jobs:
       - name: Run tests (Native FFI)
         run: |
           echo "::group::Running tests with Native FFI backend"
-          time ruby -Ilib:ext/throttle_machines_native bin/rails test
+          time RUBYLIB="$PWD/ext/throttle_machines_native" bundle exec rake test
           echo "::endgroup::"
 
       - name: Verify native mode

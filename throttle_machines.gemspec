@@ -25,16 +25,16 @@ Gem::Specification.new do |spec|
   spec.files = lib_files + %w[LICENSE README.md]
   spec.require_paths = ['lib']
 
-  spec.add_dependency 'activesupport', '>= 8.0.4'
+  spec.add_dependency 'activesupport', '>= 8.1'
   spec.add_dependency 'concurrent-ruby', '~> 1.3'
   spec.add_dependency 'rack', '~> 3.0'
   spec.add_dependency 'zeitwerk', '~> 2.7'
 
-  # Ecosystem dependencies - require Rails 8.0.4+ compatible versions
+  # Ecosystem dependencies - require Rails 8.1+ compatible versions
   spec.add_dependency 'breaker_machines', '~> 0.19'
   spec.add_dependency 'chrono_machines', '~> 0.9'
 
-  spec.add_development_dependency 'minitest', '~> 5.16'
+  spec.add_development_dependency 'minitest', '~> 6.0'
   spec.add_development_dependency 'rb_sys', '~> 0.9'
   spec.add_development_dependency 'rake', '~> 13.0'
   spec.add_development_dependency 'rake-compiler', '~> 1.3'

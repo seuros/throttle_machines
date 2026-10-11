@@ -20,7 +20,7 @@ jobs:
 
     name: ${{ matrix.name }}
     env:
-      RAILS_VERSION: "8.0"
+      RAILS_VERSION: "8.1"
       RAILS_ENV: test
     steps:
       - uses: actions/checkout@v7

@@ -12,7 +12,7 @@ rails_version = ENV['RAILS_VERSION'] || '8.1'
 # Local ecosystem dependencies for development
 gem 'breaker_machines', '~> 0.12'
 gem 'chrono_machines', '>= 0.2.0'
-gem 'minitest'
+gem 'minitest', '~> 6.0'
 gem 'mock_redis', '~> 0.44'
 gem 'puma'
 if rails_version == 'edge'
@@ -29,5 +29,6 @@ end
 gem 'rake'
 
 platforms :mri do
+  gem 'padded_cell', '~> 0.2' # Fork-per-test runner for `rake test` (CRuby only)
   gem 'pg', '~> 1.5'
 end

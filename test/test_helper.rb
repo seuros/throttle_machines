@@ -6,6 +6,13 @@ require 'minitest/autorun'
 require 'active_support'
 require 'active_support/test_case'
 
+# `rake test TESTOPTS=--coverage` measures with padded_cell; this shapes the report.
+if defined?(PaddedCell.coverage)
+  PaddedCell.coverage do
+    track 'lib/**/*.rb' # files the suite never loads report at 0%
+  end
+end
+
 $LOAD_PATH.unshift File.expand_path('../lib', __dir__)
 require 'throttle_machines'
 
