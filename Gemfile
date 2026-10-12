@@ -10,8 +10,8 @@ gemspec
 rails_version = ENV['RAILS_VERSION'] || '8.1'
 
 # Local ecosystem dependencies for development
-gem 'breaker_machines', '~> 0.12'
-gem 'chrono_machines', '>= 0.2.0'
+gem 'breaker_machines', '~> 0.20'
+gem 'chrono_machines', '~> 0.10'
 gem 'minitest', '~> 6.0'
 gem 'mock_redis', '~> 0.44'
 gem 'puma'
