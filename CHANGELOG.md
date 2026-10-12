@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0](https://github.com/seuros/throttle_machines/compare/throttle_machines/v0.2.4...throttle_machines/v0.3.0) (2026-10-12)
+
+
+### ⚠ BREAKING CHANGES
+
+* Rails 8.0 is no longer supported; activesupport >= 8.1 is required.
+
+### Bug Fixes
+
+* retain loaded Redis script SHAs ([#16](https://github.com/seuros/throttle_machines/issues/16)) ([75f2ef1](https://github.com/seuros/throttle_machines/commit/75f2ef1a48f8c5e20fec6a96bb61105b96e23d4f))
+* run Redis scripts by SHA with a single EVAL fallback ([6e586e6](https://github.com/seuros/throttle_machines/commit/6e586e6d32782eb95a6b136763b870f36f8da309))
+
+
+### Build System
+
+* require Rails 8.1 and run tests with padded_cell ([f131d15](https://github.com/seuros/throttle_machines/commit/f131d15e0445db0758b8cdb96fb3a23573eafa7f))
+
 ## [0.2.4](https://github.com/seuros/throttle_machines/compare/throttle_machines/v0.2.3...throttle_machines/v0.2.4) (2026-10-10)
 
 
