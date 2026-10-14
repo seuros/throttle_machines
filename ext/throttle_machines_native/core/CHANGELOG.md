@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.3.0](https://github.com/seuros/throttle_machines/compare/throttle-machines-v0.2.1...throttle-machines-v0.3.0) (2026-10-14)
+
+
+### Features
+
+* **core:** add KeyedGcra per-key store and GcraParams::from_rate ([b7fa7a5](https://github.com/seuros/throttle_machines/commit/b7fa7a59bcc3dfb276e4fb9be3a95e38c08fe84c))
+
+
+### Bug Fixes
+
+* **core:** admit a token due now despite float rounding ([c46bd54](https://github.com/seuros/throttle_machines/commit/c46bd54e2d913ecc25c3a9fe8098a8116c1747d6))
+* **core:** admit on-schedule GCRA requests despite float rounding ([5aa090e](https://github.com/seuros/throttle_machines/commit/5aa090e1562325e5d9474f3ec35cf1d22d5ccafb))
+
 ## [0.2.1](https://github.com/seuros/throttle_machines/compare/throttle-machines-v0.2.0...throttle-machines-v0.2.1) (2026-10-10)
 
 
