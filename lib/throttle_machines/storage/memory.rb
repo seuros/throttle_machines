@@ -130,8 +130,8 @@ module ThrottleMachines
           bucket[:last_refill] = now
 
           # Check if we can consume a token
-          if bucket[:tokens] >= 1
-            bucket[:tokens] -= 1
+          if token_available?(bucket[:tokens], now, refill_rate)
+            bucket[:tokens] = [bucket[:tokens] - 1, 0.0].max
             @token_buckets[key] = bucket.merge(expires_at: now + ttl)
 
             {
@@ -161,11 +161,11 @@ module ThrottleMachines
           tokens_to_add = elapsed * refill_rate
           current_tokens = [bucket[:tokens] + tokens_to_add, capacity].min
 
-          if current_tokens >= 1
+          if token_available?(current_tokens, now, refill_rate)
             {
               allowed: true,
               retry_after: 0,
-              tokens_remaining: (current_tokens - 1).floor
+              tokens_remaining: [current_tokens - 1, 0].max.floor
             }
           else
             retry_after = (1 - current_tokens) / refill_rate

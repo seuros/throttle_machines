@@ -57,17 +57,26 @@ module ThrottleMachines
         nil
       end
 
-      # Rounding slack for GCRA comparisons, in units of the TAT's precision.
+      # Rounding slack for time comparisons, in units of the clock's precision.
       # Matches the native core.
-      GCRA_SLACK_ULPS = 64
+      SLACK_ULPS = 64
 
       protected
 
-      # The TAT is a running sum of emission intervals, so an on-schedule
-      # arrival can overshoot the tolerance by a few ulps. The slack scales
-      # with the clock's magnitude.
+      # Times are running sums and differences of float seconds, so an
+      # on-schedule arrival can miss an exact boundary by a few ulps. The slack
+      # scales with the clock's magnitude.
+      def rounding_slack(time)
+        Float::EPSILON * SLACK_ULPS * [time.abs, 1.0].max
+      end
+
       def gcra_allowed?(tat, now, delay_tolerance)
-        tat - now <= delay_tolerance + (Float::EPSILON * GCRA_SLACK_ULPS * [tat.abs, 1.0].max)
+        tat - now <= delay_tolerance + rounding_slack(tat)
+      end
+
+      # Whether a token is available, allowing for rounding in the refill.
+      def token_available?(tokens, now, refill_rate)
+        tokens >= 1 - (rounding_slack(now) * refill_rate)
       end
 
       def current_time

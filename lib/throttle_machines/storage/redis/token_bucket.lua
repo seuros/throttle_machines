@@ -13,11 +13,15 @@ local elapsed = now - last_refill
 local tokens_to_add = elapsed * refill_rate
 tokens = math.min(tokens + tokens_to_add, capacity)
 
-local allow = tokens >= 1
+-- `elapsed` carries the clock's rounding; a token due exactly now may come
+-- out a hair short of 1. The slack scales with the clock, as in the native core.
+local slack = 2.220446049250313e-16 * 64 * math.max(math.abs(now), 1) * refill_rate
+local allow = tokens >= 1 - slack
 if allow then
-  tokens = tokens - 1
+  tokens = math.max(tokens - 1, 0)
   redis.call('HMSET', key, 'tokens', tokens, 'last_refill', now)
   redis.call('EXPIRE', key, ttl)
 end
 
-return { allow and 1 or 0, tokens }
+-- Redis truncates Lua numbers in replies to integers; send the count as text.
+return { allow and 1 or 0, string.format('%.17g', tokens) }

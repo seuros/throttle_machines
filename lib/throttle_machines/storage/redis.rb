@@ -80,14 +80,7 @@ module ThrottleMachines
                             keys: [prefixed(key)],
                             argv: [capacity, refill_rate, ttl, current_time])
 
-        allowed = result[0] == 1
-        tokens = result[1]
-
-        {
-          allowed: allowed,
-          retry_after: allowed ? 0 : (1 - tokens) / refill_rate,
-          tokens_remaining: tokens.floor
-        }
+        token_bucket_result(result, refill_rate)
       end
 
       # Peek methods for non-consuming checks
@@ -112,14 +105,7 @@ module ThrottleMachines
                             keys: [prefixed(key)],
                             argv: [capacity, refill_rate, current_time])
 
-        allowed = result[0] == 1
-        tokens_remaining = result[1]
-
-        {
-          allowed: allowed,
-          retry_after: allowed ? 0 : (1 - tokens_remaining) / refill_rate,
-          tokens_remaining: tokens_remaining.floor
-        }
+        token_bucket_result(result, refill_rate)
       end
 
       # No circuit breaker operations: breaker state is owned by BreakerMachines
@@ -146,6 +132,19 @@ module ThrottleMachines
       end
 
       private
+
+      # `result` is [allowed, tokens]: the balance after an admission, or the
+      # fractional balance a refusal waits on. Matches Storage::Memory.
+      def token_bucket_result(result, refill_rate)
+        allowed = result[0] == 1
+        tokens = Float(result[1])
+
+        {
+          allowed: allowed,
+          retry_after: allowed ? 0 : (1 - tokens) / refill_rate,
+          tokens_remaining: allowed ? tokens.floor : 0
+        }
+      end
 
       def prefixed(key)
         "#{@prefix}#{key}"
