@@ -33,6 +33,21 @@ assert!(!second.allowed);
 assert!(second.retry_after > 0.0);
 ```
 
+### Per-key limiting
+
+With `std`, `KeyedGcra` holds the per-key state for you: a sharded map on a
+monotonic clock that evicts keys once they have fully recovered.
+
+```rust
+use throttle_machines::{GcraParams, KeyedGcra};
+
+// 10 requests per second per client, bursts of 3.
+let limiter = KeyedGcra::<String>::new(GcraParams::from_rate(10.0, 3));
+
+let decision = limiter.check("203.0.113.7");
+assert!(decision.allowed);
+```
+
 ## no_std
 
 The crate is `no_std` with the default `std` feature disabled:

@@ -9,6 +9,7 @@
 //! contract: a pure, caller-holds-state decision returning a [`gate::Decision`].
 //!
 //! All algorithms are `no_std` compatible when the `std` feature is disabled.
+//! With `std`, [`KeyedGcra`] keeps per-key GCRA state on a monotonic clock.
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
@@ -16,6 +17,8 @@ pub mod circuit_breaker;
 pub mod fixed_window;
 pub mod gate;
 pub mod gcra;
+#[cfg(feature = "std")]
+pub mod keyed;
 pub mod token_bucket;
 
 #[cfg(test)]
@@ -32,4 +35,6 @@ pub use circuit_breaker::{
 pub use fixed_window::{FixedWindow, FixedWindowParams, FixedWindowState};
 pub use gate::{Decision, Gate};
 pub use gcra::{Gcra, GcraParams};
+#[cfg(feature = "std")]
+pub use keyed::KeyedGcra;
 pub use token_bucket::{TokenBucket, TokenBucketParams, TokenBucketState};
