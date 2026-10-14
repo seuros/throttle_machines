@@ -1,4 +1,5 @@
 {
+  "plugins": ["cargo-workspace"],
   "packages": {
     ".": {
       "release-type": "ruby",
