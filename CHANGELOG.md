@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1](https://github.com/seuros/throttle_machines/compare/throttle_machines/v0.3.0...throttle_machines/v0.3.1) (2026-10-14)
+
+
+### Features
+
+* **core:** add KeyedGcra per-key store and GcraParams::from_rate ([b7fa7a5](https://github.com/seuros/throttle_machines/commit/b7fa7a59bcc3dfb276e4fb9be3a95e38c08fe84c))
+
+
+### Bug Fixes
+
+* admit on-schedule GCRA requests in Ruby and Redis storage ([110b5e3](https://github.com/seuros/throttle_machines/commit/110b5e3d6103180a324e7edeca585958970208f0))
+* **core:** admit a token due now despite float rounding ([c46bd54](https://github.com/seuros/throttle_machines/commit/c46bd54e2d913ecc25c3a9fe8098a8116c1747d6))
+* **core:** admit on-schedule GCRA requests despite float rounding ([5aa090e](https://github.com/seuros/throttle_machines/commit/5aa090e1562325e5d9474f3ec35cf1d22d5ccafb))
+* token bucket rounding and truncated Redis replies ([eae0a9e](https://github.com/seuros/throttle_machines/commit/eae0a9e4a5a42b4f6fc2cc61810471d596df08b5))
+
 ## [0.3.0](https://github.com/seuros/throttle_machines/compare/throttle_machines/v0.2.4...throttle_machines/v0.3.0) (2026-10-12)
 
 
