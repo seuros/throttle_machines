@@ -12,8 +12,42 @@ pub struct GcraParams {
     pub delay_tolerance: f64,
 }
 
+impl GcraParams {
+    /// `per_second` sustained, with `burst` back-to-back requests allowed from
+    /// idle (`0` and `1` both mean no burst).
+    ///
+    /// ```
+    /// use throttle_machines::gcra::GcraParams;
+    /// let params = GcraParams::from_rate(10.0, 3);
+    /// assert_eq!(params.emission_interval, 0.1);
+    /// assert_eq!(params.delay_tolerance, 0.2);
+    /// ```
+    #[must_use]
+    pub fn from_rate(per_second: f64, burst: u32) -> Self {
+        let emission_interval = per_second.recip();
+        Self {
+            emission_interval,
+            delay_tolerance: f64::from(burst.saturating_sub(1)) * emission_interval,
+        }
+    }
+}
+
 /// GCRA gate. State is the TAT (`0.0` for the first request).
 pub struct Gcra;
+
+/// Rounding slack, in units of the TAT's own precision.
+const SLACK_ULPS: f64 = 64.0;
+
+/// Whether `tat` is within `delay_tolerance` of `now`. The TAT is a running
+/// sum of emission intervals, so on-schedule arrivals can overshoot the exact
+/// boundary by a few ulps; the slack scales with the clock's magnitude so
+/// epoch-second clocks are covered as well as monotonic ones (at ~1.7e9 s it
+/// is ~24 µs, far below any practical emission interval at that precision).
+#[inline]
+fn within_tolerance(tat: f64, now: f64, delay_tolerance: f64) -> bool {
+    let slack = f64::EPSILON * SLACK_ULPS * tat.abs().max(1.0);
+    tat - now <= delay_tolerance + slack
+}
 
 impl Gate for Gcra {
     type State = f64;
@@ -28,9 +62,8 @@ impl Gate for Gcra {
     #[inline]
     fn check(tat: f64, now: f64, params: GcraParams) -> Decision<f64> {
         let new_tat = tat.max(now);
-        let diff = new_tat - now;
 
-        if diff <= params.delay_tolerance {
+        if within_tolerance(new_tat, now, params.delay_tolerance) {
             Decision {
                 allowed: true,
                 state: new_tat + params.emission_interval,
@@ -40,7 +73,7 @@ impl Gate for Gcra {
             Decision {
                 allowed: false,
                 state: new_tat,
-                retry_after: diff - params.delay_tolerance,
+                retry_after: new_tat - now - params.delay_tolerance,
             }
         }
     }
@@ -48,8 +81,7 @@ impl Gate for Gcra {
     #[inline]
     fn peek(tat: f64, now: f64, params: GcraParams) -> Decision<f64> {
         let effective_tat = tat.max(now);
-        let diff = effective_tat - now;
-        let allowed = diff <= params.delay_tolerance;
+        let allowed = within_tolerance(effective_tat, now, params.delay_tolerance);
 
         Decision {
             allowed,
@@ -57,7 +89,7 @@ impl Gate for Gcra {
             retry_after: if allowed {
                 0.0
             } else {
-                diff - params.delay_tolerance
+                effective_tat - now - params.delay_tolerance
             },
         }
     }
