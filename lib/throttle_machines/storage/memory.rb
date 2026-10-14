@@ -86,7 +86,7 @@ module ThrottleMachines
           state = @gcra_states[key] || { tat: 0.0 }
 
           tat = [state[:tat], now].max
-          allow = tat - now <= delay_tolerance
+          allow = gcra_allowed?(tat, now, delay_tolerance)
 
           if allow
             new_tat = tat + emission_interval
@@ -107,7 +107,7 @@ module ThrottleMachines
           state = @gcra_states[key] || { tat: 0.0 }
 
           tat = [state[:tat], now].max
-          allow = tat - now <= delay_tolerance
+          allow = gcra_allowed?(tat, now, delay_tolerance)
 
           {
             allowed: allow,

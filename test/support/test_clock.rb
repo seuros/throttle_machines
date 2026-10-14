@@ -13,10 +13,10 @@ module ThrottleMachines
       # Store original method before overriding
       @original_method = ThrottleMachines.method(:monotonic_time) if ThrottleMachines.respond_to?(:monotonic_time)
 
-      # Override the global monotonic_time method
-      ThrottleMachines.singleton_class.define_method(:monotonic_time) do
-        @current_time
-      end
+      # Override the global monotonic_time method. The block runs with the
+      # module as self, so close over the clock rather than its ivar.
+      clock = self
+      ThrottleMachines.singleton_class.define_method(:monotonic_time) { clock.current_time }
     end
 
     def now

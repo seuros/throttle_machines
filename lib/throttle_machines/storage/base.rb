@@ -57,7 +57,18 @@ module ThrottleMachines
         nil
       end
 
+      # Rounding slack for GCRA comparisons, in units of the TAT's precision.
+      # Matches the native core.
+      GCRA_SLACK_ULPS = 64
+
       protected
+
+      # The TAT is a running sum of emission intervals, so an on-schedule
+      # arrival can overshoot the tolerance by a few ulps. The slack scales
+      # with the clock's magnitude.
+      def gcra_allowed?(tat, now, delay_tolerance)
+        tat - now <= delay_tolerance + (Float::EPSILON * GCRA_SLACK_ULPS * [tat.abs, 1.0].max)
+      end
 
       def current_time
         # Use monotonic time for consistency with BreakerMachines

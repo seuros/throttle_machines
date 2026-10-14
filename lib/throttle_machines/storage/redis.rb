@@ -59,13 +59,13 @@ module ThrottleMachines
 
       # GCRA operations (atomic via Lua)
       def check_gcra_limit(key, emission_interval, delay_tolerance, ttl)
+        now = current_time
         result = run_script(GCRA_SCRIPT, GCRA_SHA,
                             keys: [prefixed(key)],
-                            argv: [emission_interval, delay_tolerance, ttl, current_time])
+                            argv: [emission_interval, delay_tolerance, ttl, now])
 
         allowed = result[0] == 1
-        tat = result[1]
-        now = current_time
+        tat = Float(result[1])
 
         {
           allowed: allowed,
@@ -92,13 +92,13 @@ module ThrottleMachines
 
       # Peek methods for non-consuming checks
       def peek_gcra_limit(key, emission_interval, delay_tolerance)
+        now = current_time
         result = run_script(PEEK_GCRA_SCRIPT, PEEK_GCRA_SHA,
                             keys: [prefixed(key)],
-                            argv: [emission_interval, delay_tolerance, current_time])
+                            argv: [emission_interval, delay_tolerance, now])
 
         allowed = result[0] == 1
-        tat = result[1]
-        now = current_time
+        tat = Float(result[1])
 
         {
           allowed: allowed,
