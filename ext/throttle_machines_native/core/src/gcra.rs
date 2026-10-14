@@ -1,7 +1,7 @@
 //! Generic Cell Rate Algorithm (GCRA): smooth rate limiting via a Theoretical
 //! Arrival Time (TAT) advanced by an emission interval per request.
 
-use crate::gate::{Decision, Gate};
+use crate::gate::{Decision, Gate, rounding_slack};
 
 /// GCRA configuration.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -35,18 +35,11 @@ impl GcraParams {
 /// GCRA gate. State is the TAT (`0.0` for the first request).
 pub struct Gcra;
 
-/// Rounding slack, in units of the TAT's own precision.
-const SLACK_ULPS: f64 = 64.0;
-
-/// Whether `tat` is within `delay_tolerance` of `now`. The TAT is a running
-/// sum of emission intervals, so on-schedule arrivals can overshoot the exact
-/// boundary by a few ulps; the slack scales with the clock's magnitude so
-/// epoch-second clocks are covered as well as monotonic ones (at ~1.7e9 s it
-/// is ~24 µs, far below any practical emission interval at that precision).
+/// Whether `tat` is within `delay_tolerance` of `now`, allowing for the
+/// rounding a running sum of emission intervals accumulates.
 #[inline]
 fn within_tolerance(tat: f64, now: f64, delay_tolerance: f64) -> bool {
-    let slack = f64::EPSILON * SLACK_ULPS * tat.abs().max(1.0);
-    tat - now <= delay_tolerance + slack
+    tat - now <= delay_tolerance + rounding_slack(tat)
 }
 
 impl Gate for Gcra {

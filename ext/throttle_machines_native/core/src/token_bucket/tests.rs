@@ -59,3 +59,24 @@ fn denies_until_next_token() {
         );
     }
 }
+
+#[test]
+fn token_due_now_survives_float_rounding() {
+    // `(start + 0.1) - start` is a hair under 0.1 at large clock readings, so
+    // the refill lands just short of one token.
+    let params = TokenBucketParams {
+        capacity: 3.0,
+        refill_rate: 10.0,
+    };
+    for start in [1.0, 12_345.678, 1_700_000_000.0] {
+        let drained = bucket(0.0, start);
+        let decision = TokenBucket::check(drained, start + 0.1, params);
+        assert!(decision.allowed, "start {start}: {decision:?}");
+        assert!(decision.state.tokens >= 0.0, "start {start}: {decision:?}");
+        // Still refused well before the token is due.
+        assert!(
+            !TokenBucket::check(drained, start + 0.09, params).allowed,
+            "start {start}"
+        );
+    }
+}

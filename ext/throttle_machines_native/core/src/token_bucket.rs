@@ -1,7 +1,7 @@
 //! Token bucket: burst capacity over a steady refill rate; each request
 //! consumes one token.
 
-use crate::gate::{Decision, Gate};
+use crate::gate::{Decision, Gate, rounding_slack};
 
 /// Token bucket state.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -53,11 +53,19 @@ impl Gate for TokenBucket {
         )]
         let refilled = (state.tokens + elapsed * params.refill_rate).min(params.capacity);
 
-        if refilled >= 1.0 {
+        // `elapsed` carries the clock's rounding; a token due exactly now may
+        // come out a hair short of 1.
+        #[allow(
+            clippy::suboptimal_flops,
+            reason = "`mul_add` is std-only (breaks no_std)"
+        )]
+        let one_token = 1.0 - rounding_slack(now) * params.refill_rate;
+
+        if refilled >= one_token {
             Decision {
                 allowed: true,
                 state: TokenBucketState {
-                    tokens: refilled - 1.0,
+                    tokens: (refilled - 1.0).max(0.0),
                     last_refill: now,
                 },
                 retry_after: 0.0,
