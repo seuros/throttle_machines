@@ -38,6 +38,22 @@ assert!(second.retry_after > 0.0);
 With `std`, `KeyedGcra` holds the per-key state for you: a sharded map on a
 monotonic clock that evicts keys once they have fully recovered.
 
+Storage is capped at **4096 keys per shard** by default (at most 65536 keys
+with the default 16 shards). Configure it with
+`KeyedGcra::new(params).max_keys_per_shard(1024)`. A full shard first reclaims
+recovered keys, then refuses unknown identities without allocating state.
+Existing identities keep their rate limits; free slots in other shards are
+not borrowed. Zero rejects all identities.
+
+`evict_at` is only a cleanup trigger, not the cap. Automatic sweeps wait until
+a key could have recovered, so a rejected identity spray does not repeatedly
+scan unrecovered state. `peek` also respects the cap and may reclaim recovered
+keys, but never consumes an admission. Capacity refusals have state `0.0` and
+a retry hint based on the next possible recovery (not a reservation).
+
+The cap bounds entry count, not arbitrary key byte lengths. Bound identity
+length at ingress as well when keys are attacker-controlled.
+
 ```rust
 use throttle_machines::{GcraParams, KeyedGcra};
 

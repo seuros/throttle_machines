@@ -84,3 +84,85 @@ fn uses_a_monotonic_clock_from_creation() {
     assert!(limiter.check("alice").allowed);
     assert!(limiter.now() >= now);
 }
+
+fn bounded(max_keys: usize) -> KeyedGcra<u32> {
+    KeyedGcra::with_hasher(limiter().params(), NonZeroUsize::MIN, RandomState::new())
+        .max_keys_per_shard(max_keys)
+        .evict_at(usize::MAX)
+}
+
+#[test]
+fn identity_spray_cannot_exceed_cap_or_reset_existing_keys() {
+    let limiter = bounded(2);
+    for _ in 0..3 {
+        assert!(limiter.check_at(&1, 1.0).allowed);
+    }
+    assert!(limiter.check_at(&2, 1.0).allowed);
+    for key in 3..1000 {
+        let refusal = limiter.check_at(&key, 1.0);
+        assert!(!refusal.allowed);
+        assert!(refusal.retry_after > 0.0);
+        assert_eq!(refusal.state, 0.0);
+        assert!(!limiter.peek_at(&key, 1.0).allowed);
+    }
+    assert_eq!(limiter.len(), 2);
+    assert!(!limiter.check_at(&1, 1.0).allowed);
+    // Key 2 still has burst capacity even though the store is full.
+    assert!(limiter.check_at(&2, 1.0).allowed);
+}
+
+#[test]
+fn full_shard_reclaims_recovered_keys_before_refusing() {
+    let limiter = bounded(1);
+    assert!(limiter.check_at(&1, 1.0).allowed);
+    assert!(!limiter.check_at(&2, 1.05).allowed);
+    assert!(limiter.check_at(&2, 1.1).allowed);
+    assert_eq!(limiter.len(), 1);
+    assert!(!limiter.peek_at(&1, 1.1).allowed);
+    assert!(limiter.peek_at(&1, 2.0).allowed);
+    assert!(limiter.is_empty(), "peek only reclaims recovered state");
+}
+
+#[test]
+fn zero_cap_never_tracks_or_admits_keys() {
+    let limiter = bounded(0);
+    assert!(!limiter.check_at(&1, 1.0).allowed);
+    assert!(!limiter.peek_at(&1, 1.0).allowed);
+    assert!(limiter.is_empty());
+}
+
+#[test]
+fn concurrent_admissions_cannot_overrun_cap() {
+    let limiter = bounded(17);
+    let barrier = std::sync::Barrier::new(8);
+    let admitted: usize = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..8)
+            .map(|worker| {
+                let limiter = &limiter;
+                let barrier = &barrier;
+                scope.spawn(move || {
+                    barrier.wait();
+                    (0..64)
+                        .filter(|key| limiter.check_at(&(worker * 64 + key), 1.0).allowed)
+                        .count()
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|handle| handle.join().expect("admission thread"))
+            .sum()
+    });
+    assert_eq!(admitted, 17);
+    assert_eq!(limiter.len(), 17);
+    assert_eq!(limiter.evict_before(2.0), 17);
+    assert!(limiter.is_empty());
+}
+
+#[test]
+#[should_panic(expected = "max_keys cannot be smaller than an existing shard")]
+fn lowering_cap_cannot_silently_violate_bound() {
+    let limiter = bounded(2);
+    limiter.check_at(&1, 1.0);
+    let _limiter = limiter.max_keys_per_shard(0);
+}
