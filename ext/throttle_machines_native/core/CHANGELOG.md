@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.1](https://github.com/seuros/throttle_machines/compare/throttle-machines-v0.3.0...throttle-machines-v0.3.1) (2026-10-20)
+
+
+### Bug Fixes
+
+* **core:** cap keyed GCRA storage under identity sprays ([fb8030a](https://github.com/seuros/throttle_machines/commit/fb8030a73b4dfe03497fd7550f8ee391cca41538))
+
 ## [0.3.0](https://github.com/seuros/throttle_machines/compare/throttle-machines-v0.2.1...throttle-machines-v0.3.0) (2026-10-14)
 
 
