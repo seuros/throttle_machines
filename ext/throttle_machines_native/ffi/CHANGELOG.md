@@ -1,5 +1,7 @@
 # Changelog
 
+## [0.3.2](https://github.com/seuros/throttle_machines/compare/throttle_machines_native-v0.3.1...throttle_machines_native-v0.3.2) (2026-10-20)
+
 ## [0.3.1](https://github.com/seuros/throttle_machines/compare/throttle_machines_native-v0.3.0...throttle_machines_native-v0.3.1) (2026-10-10)
 
 
