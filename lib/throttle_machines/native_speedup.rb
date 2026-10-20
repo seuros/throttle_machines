@@ -21,6 +21,7 @@ begin
       # Native GCRA implementation using Rust.
       module NativeGCRA
         def check_gcra_limit(key, emission_interval, delay_tolerance, ttl)
+          reclaim_capacity
           with_write_lock(key) do
             now = current_time
             state = @gcra_states[key] || { tat: 0.0 }
@@ -30,15 +31,20 @@ begin
               state[:tat], now, emission_interval, delay_tolerance
             ) => { allowed:, state: new_tat, retry_after: }
 
-            @gcra_states[key] = { tat: new_tat, expires_at: now + ttl } if allowed
+            if allowed && !store_entry(@gcra_states, key, { tat: new_tat, expires_at: now + ttl })
+              return capacity_gcra_refusal(now, delay_tolerance)
+            end
 
             { allowed: allowed, retry_after: retry_after, tat: new_tat }
           end
         end
 
         def peek_gcra_limit(key, _emission_interval, delay_tolerance)
+          reclaim_capacity
           with_read_lock(key) do
             now = current_time
+            return capacity_gcra_refusal(now, delay_tolerance) unless capacity_available?(@gcra_states, key)
+
             state = @gcra_states[key] || { tat: 0.0 }
 
             # Rust does the math
@@ -54,6 +60,7 @@ begin
       # Native Token Bucket implementation using Rust.
       module NativeTokenBucket
         def check_token_bucket(key, capacity, refill_rate, ttl)
+          reclaim_capacity
           with_write_lock(key) do
             now = current_time
             bucket = @token_buckets[key] || { tokens: capacity, last_refill: now }
@@ -64,7 +71,9 @@ begin
             ) => { allowed:, state: new_tokens, retry_after: }
 
             if allowed
-              @token_buckets[key] = { tokens: new_tokens, last_refill: now, expires_at: now + ttl }
+              unless store_entry(@token_buckets, key, { tokens: new_tokens, last_refill: now, expires_at: now + ttl })
+                return capacity_token_bucket_refusal
+              end
             end
 
             { allowed: allowed, retry_after: retry_after, tokens_remaining: new_tokens.floor }
@@ -72,8 +81,11 @@ begin
         end
 
         def peek_token_bucket(key, capacity, refill_rate)
+          reclaim_capacity
           with_read_lock(key) do
             now = current_time
+            return capacity_token_bucket_refusal unless capacity_available?(@token_buckets, key)
+
             bucket = @token_buckets[key] || { tokens: capacity, last_refill: now }
 
             # Rust does the math

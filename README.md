@@ -100,6 +100,32 @@ end
 
 ---
 
+## Bounded in-memory storage
+
+The memory backend tracks at most **65536 entries**, shared across fixed-window
+counters, GCRA states, and token buckets, including when native speedups are loaded.
+
+```ruby
+ThrottleMachines.storage = ThrottleMachines::Storage::Memory.new(max_keys: 10_000)
+```
+
+When full, expired entries are reclaimed before admission. If no slot is
+available, new identities are throttled; active identities are never evicted
+to make room and can continue under their existing limits. Peeks also fail
+closed for untrackable identities. Capacity refusals use a one-second retry
+hint, not a reservation. At saturation, on-demand expiry scans run at most
+once per second, even with `auto_cleanup: false`.
+
+`max_keys` must be a non-negative integer; zero denies all identities. For
+direct storage callers, an untrackable fixed-window counter reads/increments
+as `Float::INFINITY` so it cannot pass a finite rate limit.
+
+This bounds entry count, not bytes: also bound untrusted identity lengths.
+Redis storage uses TTLs but has no application-level key cap; configure Redis
+memory limits separately. Evicting active Redis keys can reset their limits.
+
+---
+
 ## 🌠 The Ultra-Thin Philosophy
 
 Like the best spacecraft, ThrottleMachines follows the principle of **ultra-thin design**:
