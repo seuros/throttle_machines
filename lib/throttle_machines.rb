@@ -12,6 +12,7 @@ require 'breaker_machines'
 # Set up Zeitwerk loader
 loader = Zeitwerk::Loader.for_gem
 loader.ignore("#{__dir__}/throttle_machines/engine.rb") unless defined?(Rails::Engine)
+loader.ignore("#{__dir__}/throttle_machines/native_speedup.rb")
 loader.setup
 
 module ThrottleMachines
