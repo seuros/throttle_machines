@@ -159,6 +159,8 @@ module ThrottleMachines
       case symbol
       when :memory
         Storage::Memory.new
+      when :cache
+        Storage::Cache.new
       when :redis
         raise ArgumentError, 'Redis storage requires redis gem' unless defined?(Redis)
 

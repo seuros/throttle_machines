@@ -126,6 +126,34 @@ memory limits separately. Evicting active Redis keys can reset their limits.
 
 ---
 
+## Rails cache storage
+
+`Storage::Cache` keeps fixed-window counters in any `ActiveSupport::Cache`
+store, so limits share Solid Cache, Redis, or Memcached with the rest of the app
+(and with `BreakerMachines::Storage::Cache`).
+
+```ruby
+ThrottleMachines.storage = ThrottleMachines::Storage::Cache.new(cache_store: Rails.cache)
+# or, inside Rails: config.default_storage = :cache
+```
+
+Windows align to the Unix epoch and each one is its own cache entry, admitted
+with a single atomic `increment`. On Solid Cache with PostgreSQL, the first
+increments of a window can race and undercount by the number of concurrent
+first requests.
+
+It supports `:fixed_window` only; the cache API has no atomic read-modify-write
+for GCRA or token buckets. A limiter built with an algorithm its storage lacks
+raises `ArgumentError` on construction, for custom backends too.
+
+When the store fails to count (an outage, `NullStore`), requests are admitted.
+Pass `fail_closed: true` to throttle them instead. `clear` deletes only this
+backend's keys and needs `delete_matched`; on Solid Cache and Memcached it
+raises `ThrottleMachines::UnsupportedOperationError`, so reset single limiters
+with `Limiter#reset!`.
+
+---
+
 ## 🌠 The Ultra-Thin Philosophy
 
 Like the best spacecraft, ThrottleMachines follows the principle of **ultra-thin design**:
