@@ -10,6 +10,7 @@ module ThrottleMachines
       @period = period
       @algorithm = algorithm
       @storage = storage || ThrottleMachines.storage
+      validate_algorithm!
     end
 
     def allow?
@@ -162,6 +163,18 @@ module ThrottleMachines
         remaining: remaining,
         retry_after: retry_after
       }
+    end
+
+    private
+
+    def validate_algorithm!
+      unless Storage::Base::ALGORITHM_OPERATIONS.key?(@algorithm)
+        raise ArgumentError, "Unknown algorithm: #{@algorithm.inspect}"
+      end
+      return unless @storage.respond_to?(:supports?)
+      return if @storage.supports?(@algorithm)
+
+      raise ArgumentError, "#{@storage.class} does not support the #{@algorithm.inspect} algorithm"
     end
   end
 end
