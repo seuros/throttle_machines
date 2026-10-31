@@ -70,9 +70,7 @@ module ThrottleMachines
       end
 
       def with_timeout(timeout, &block)
-        Timeout.timeout(timeout, &block)
-      rescue Timeout::Error
-        nil
+        Timeout.timeout(DeadlineMachines.clamp_sleep(timeout), &block)
       end
 
       # Rounding slack for time comparisons, in units of the clock's precision.
