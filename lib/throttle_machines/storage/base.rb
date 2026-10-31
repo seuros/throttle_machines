@@ -70,6 +70,7 @@ module ThrottleMachines
       end
 
       def with_timeout(timeout, &block)
+        DeadlineMachines.check!
         Timeout.timeout(DeadlineMachines.clamp_sleep(timeout), &block)
       end
 
