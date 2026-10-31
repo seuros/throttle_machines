@@ -22,26 +22,25 @@ module ThrottleMachines
     end
 
     def throttle_async(max_wait: nil, &block)
-      deadline = max_wait.nil? ? nil : ThrottleMachines.monotonic_time + max_wait.to_f
+      caller_budget = DeadlineMachines.current
 
-      loop do
-        begin
-          throttle!
-        rescue ThrottledError => e
-          wait_time = [e.retry_after.to_f, 0.0].max
+      DeadlineMachines.with_deadline(max_wait) do |budget|
+        loop do
+          begin
+            throttle!
+          rescue ThrottledError => e
+            caller_budget&.check!
+            wait_time = [e.retry_after.to_f, 0.0].max
+            raise if budget.clamp_sleep(wait_time) < wait_time
 
-          if deadline
-            remaining_wait = deadline - ThrottleMachines.monotonic_time
-            raise if remaining_wait <= 0 || wait_time > remaining_wait
+            sleep_for(wait_time)
+            next
           end
 
-          sleep_for(wait_time)
-          next
+          return block.call if block
+
+          return true
         end
-
-        return block.call if block
-
-        return true
       end
     end
 

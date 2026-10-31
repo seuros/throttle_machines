@@ -1,6 +1,5 @@
 //! The shared admission-gate contract: pure `check`/`peek` over caller-held
-//! state, returning a [`Decision`]. All rate limiters and the circuit breaker
-//! implement [`Gate`].
+//! state, returning a [`Decision`]. Every rate limiter implements [`Gate`].
 
 /// Rounding slack, in units of the clock's own precision.
 const SLACK_ULPS: f64 = 64.0;

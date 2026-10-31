@@ -7,6 +7,7 @@ require 'active_support/core_ext/class/attribute'
 
 # Ecosystem dependencies
 require 'chrono_machines'
+require 'deadline_machines'
 require 'breaker_machines'
 
 # Set up Zeitwerk loader

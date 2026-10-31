@@ -27,15 +27,6 @@ module ThrottleMachines
       assert_in_delta 0.0, retry_after
     end
 
-    def test_breaker_record_returns_an_outcome
-      outcome = ::ThrottleMachinesNative.circuit_breaker_record(0, 0, 5.0, false, 1)
-
-      assert_kind_of ::ThrottleMachinesNative::Outcome, outcome
-      assert_equal 1, outcome.state
-      assert_equal 1, outcome.failures
-      assert_in_delta 5.0, outcome.opened_at
-    end
-
     def test_runs_inside_a_ractor_and_returns_shareable_results
       experimental = Warning[:experimental]
       Warning[:experimental] = false

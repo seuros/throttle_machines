@@ -1,6 +1,6 @@
 # throttle-machines
 
-Rate limiting and circuit breaking as pure functions over caller-held state.
+Rate limiting as pure functions over caller-held state.
 No clocks, no locks, no allocation: you store the state, pass it in with the
 current time, and get a decision plus the next state back.
 
@@ -11,8 +11,6 @@ Every algorithm implements the [`Gate`] trait (`check` consumes, `peek` doesn't)
 - **GCRA** (Generic Cell Rate Algorithm): smooth, precise per-request spacing.
 - **Token Bucket**: burst capacity with a steady refill rate.
 - **Fixed Window**: a counter per window.
-- **Circuit Breaker**: closed / open / half-open admission, with `record` to
-  fold call outcomes back in.
 
 ## Usage
 

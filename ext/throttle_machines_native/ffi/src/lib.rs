@@ -1,31 +1,24 @@
 //! Ruby FFI bindings for throttle-machines rate limiting algorithms.
 //!
 //! Admission checks return a `ThrottleMachinesNative::Decision`
-//! (`Data.define(:allowed, :state, :retry_after)`); breaker outcome records
-//! return a `ThrottleMachinesNative::Outcome`
-//! (`Data.define(:state, :failures, :opened_at)`). Both are frozen and hold
-//! only shareable values (booleans, integers, floats), so they are
-//! Ractor-shareable, and the extension itself is marked Ractor-safe.
+//! (`Data.define(:allowed, :state, :retry_after)`), frozen and holding only
+//! shareable values (booleans, integers, floats), so it is Ractor-shareable,
+//! and the extension itself is marked Ractor-safe.
 
 use magnus::value::Opaque;
 use magnus::{Error, IntoValue, RClass, RStruct, Ruby, Value, function, prelude::*};
 use std::sync::OnceLock;
-use throttle_machines::circuit_breaker::{BreakerParams, BreakerState, CircuitState};
 use throttle_machines::fixed_window::{FixedWindowParams, FixedWindowState};
 use throttle_machines::gate::Gate;
 use throttle_machines::gcra::GcraParams;
 use throttle_machines::token_bucket::{TokenBucketParams, TokenBucketState};
-use throttle_machines::{CircuitBreaker, FixedWindow, Gcra, TokenBucket};
+use throttle_machines::{FixedWindow, Gcra, TokenBucket};
 
 /// `ThrottleMachinesNative::Decision`, defined once in `init`.
 static DECISION: OnceLock<Opaque<RClass>> = OnceLock::new();
-/// `ThrottleMachinesNative::Outcome`, defined once in `init`.
-static OUTCOME: OnceLock<Opaque<RClass>> = OnceLock::new();
 
 /// `Decision` members, in the order [`decision`] fills them.
 const DECISION_MEMBERS: (&str, &str, &str) = ("allowed", "state", "retry_after");
-/// `Outcome` members, in the order [`circuit_breaker_record`] fills them.
-const OUTCOME_MEMBERS: (&str, &str, &str) = ("state", "failures", "opened_at");
 
 fn data_class(ruby: &Ruby, class: &OnceLock<Opaque<RClass>>) -> Result<RClass, Error> {
     class
@@ -200,82 +193,6 @@ const fn fixed_window_remaining(count: u64, limit: u64) -> u64 {
     FixedWindow::remaining(count, limit)
 }
 
-/// Circuit breaker admission check.
-///
-/// `state` is encoded as `Closed = 0`, `Open = 1`, `HalfOpen = 2`.
-fn circuit_breaker_check(
-    ruby: &Ruby,
-    state: u8,
-    opened_at: f64,
-    now: f64,
-    reset_timeout: f64,
-) -> Result<Value, Error> {
-    let breaker = BreakerState {
-        state: CircuitState::from_u8(state),
-        opened_at,
-    };
-    let result = CircuitBreaker::check(breaker, now, BreakerParams { reset_timeout });
-    decision(
-        ruby,
-        result.allowed,
-        result.state.state.to_u8(),
-        result.retry_after,
-    )
-}
-
-/// Circuit breaker peek (non-transitioning admission check).
-///
-/// Never moves an Open breaker into the half-open probe window.
-fn circuit_breaker_peek(
-    ruby: &Ruby,
-    state: u8,
-    opened_at: f64,
-    now: f64,
-    reset_timeout: f64,
-) -> Result<Value, Error> {
-    let breaker = BreakerState {
-        state: CircuitState::from_u8(state),
-        opened_at,
-    };
-    let result = CircuitBreaker::peek(breaker, now, BreakerParams { reset_timeout });
-    decision(
-        ruby,
-        result.allowed,
-        result.state.state.to_u8(),
-        result.retry_after,
-    )
-}
-
-/// Circuit breaker outcome record.
-///
-/// Folds the result of a completed call back into the breaker state.
-fn circuit_breaker_record(
-    ruby: &Ruby,
-    state: u8,
-    failures: u32,
-    now: f64,
-    success: bool,
-    failure_threshold: u32,
-) -> Result<Value, Error> {
-    let result = CircuitBreaker::record(
-        CircuitState::from_u8(state),
-        failures,
-        now,
-        success,
-        failure_threshold,
-    );
-    new_data(
-        ruby,
-        &OUTCOME,
-        [
-            ruby.into_value(result.new_state.to_u8()),
-            ruby.into_value(result.new_failures),
-            ruby.into_value(result.opened_at),
-        ],
-    )
-}
-
-/// Define a `Data` class under `module` and remember it for the functions.
 fn define_data_class(
     ruby: &Ruby,
     module: magnus::RModule,
@@ -305,7 +222,6 @@ fn init(ruby: &Ruby) -> Result<(), Error> {
 
     let module = ruby.define_module("ThrottleMachinesNative")?;
     define_data_class(ruby, module, &DECISION, "Decision", DECISION_MEMBERS)?;
-    define_data_class(ruby, module, &OUTCOME, "Outcome", OUTCOME_MEMBERS)?;
 
     // GCRA functions
     module.define_singleton_method("gcra_check", function!(gcra_check, 4))?;
@@ -321,14 +237,6 @@ fn init(ruby: &Ruby) -> Result<(), Error> {
     module.define_singleton_method(
         "fixed_window_remaining",
         function!(fixed_window_remaining, 2),
-    )?;
-
-    // Circuit breaker functions
-    module.define_singleton_method("circuit_breaker_check", function!(circuit_breaker_check, 4))?;
-    module.define_singleton_method("circuit_breaker_peek", function!(circuit_breaker_peek, 4))?;
-    module.define_singleton_method(
-        "circuit_breaker_record",
-        function!(circuit_breaker_record, 5),
     )?;
 
     Ok(())
