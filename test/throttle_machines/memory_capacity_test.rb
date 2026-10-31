@@ -72,16 +72,17 @@ module ThrottleMachines
       storage = memory(1)
       assert storage.check_gcra_limit('known', 1.0, 0, 1)[:allowed]
       @clock.advance(2)
-      write_lock = storage.method(:with_write_lock)
+      state = storage.instance_variable_get(:@state)
+      write_lock = state.method(:with_write_lock)
       refreshed = false
-      storage.define_singleton_method(:with_write_lock) do |key, &block|
+      state.define_singleton_method(:with_write_lock) do |key, &block|
         write_lock.call(key) do
           unless refreshed
             refreshed = true
             # Simulate a writer refreshing the TTL after cleanup has selected
             # the key, but before cleanup acquires its striped lock.
-            data = @gcra_states.fetch(key)
-            store_entry(@gcra_states, key, data.merge(expires_at: current_time + 60))
+            data = gcra_states.fetch(key)
+            store_entry(gcra_states, key, data.merge(expires_at: ThrottleMachines.monotonic_time + 60))
           end
           block.call
         end
@@ -147,7 +148,7 @@ module ThrottleMachines
       8.times { start << true }
       workers.each(&:value)
       assert_equal 7, stored_keys(storage)
-      assert_equal 7, storage.instance_variable_get(:@stored_keys)
+      assert_equal 7, storage.instance_variable_get(:@state).stored_keys
     end
 
     private

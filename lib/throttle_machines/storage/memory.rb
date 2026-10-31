@@ -7,37 +7,36 @@ module ThrottleMachines
     class Memory < Base
       DEFAULT_MAX_KEYS = 65_536
       CAPACITY_RETRY_AFTER = 1.0
+      DEFAULT_CLEANUP_INTERVAL = 60
+      DEFAULT_LOCK_POOL_SIZE = 32
+      SHUTDOWN_GRACE = 1.0
 
       def initialize(options = {})
         super
-        @max_keys = options.fetch(:max_keys, DEFAULT_MAX_KEYS)
-        unless @max_keys.is_a?(Integer) && @max_keys >= 0
-          raise ArgumentError, 'max_keys must be a non-negative integer'
-        end
+        max_keys = options.fetch(:max_keys, DEFAULT_MAX_KEYS)
+        raise ArgumentError, 'max_keys must be a non-negative integer' unless max_keys.is_a?(Integer) && max_keys >= 0
 
-        @stored_keys = 0
-        @capacity_lock = Mutex.new
+        @state = State.new(
+          max_keys: max_keys,
+          lock_pool_size: options[:lock_pool_size] || DEFAULT_LOCK_POOL_SIZE,
+          cleanup_interval: options[:cleanup_interval] || DEFAULT_CLEANUP_INTERVAL
+        )
+        @counters = @state.counters
+        @gcra_states = @state.gcra_states
+        @token_buckets = @state.token_buckets
+
         @capacity_cleanup_lock = Mutex.new
         @next_capacity_cleanup_at = -Float::INFINITY
-        @counters = Concurrent::Hash.new
-        @gcra_states = Concurrent::Hash.new
-        @token_buckets = Concurrent::Hash.new
+        @cleanup_thread = nil
 
-        # Use a striped lock pattern - pool of locks for fine-grained concurrency
-        @lock_pool_size = options[:lock_pool_size] || 32
-        @locks = Array.new(@lock_pool_size) { Concurrent::ReadWriteLock.new }
+        return if options[:auto_cleanup] == false
 
-        # Background cleanup thread
-        @cleanup_interval = options[:cleanup_interval] || 60
-        @shutdown = false
-        @cleanup_thread = start_cleanup_thread if options[:auto_cleanup] != false
-
-        # Ensure cleanup on garbage collection
+        @cleanup_thread = @state.start_cleanup_thread
         ObjectSpace.define_finalizer(self, self.class.finalizer(@cleanup_thread))
       end
 
       def self.finalizer(cleanup_thread)
-        proc { cleanup_thread&.kill }
+        proc { cleanup_thread.kill }
       end
 
       # Rate limiting operations
@@ -214,18 +213,13 @@ module ThrottleMachines
           regex = Regexp.new(pattern.gsub('*', '.*'))
 
           # Clear matching keys from all stores
-          [@counters, @gcra_states, @token_buckets].each do |store|
+          @state.stores.each do |store|
             store.keys.each do |k|
               with_write_lock(k) { delete_entry(store, k) } if k&.match?(regex)
             end
           end
         else
-          @capacity_lock.synchronize do
-            @counters.clear
-            @gcra_states.clear
-            @token_buckets.clear
-            @stored_keys = 0
-          end
+          @state.clear_all
         end
       end
 
@@ -234,37 +228,25 @@ module ThrottleMachines
       end
 
       def shutdown
-        @shutdown = true
-        @cleanup_thread&.join(1) # Wait up to 1 second for graceful shutdown
-        @cleanup_thread&.kill if @cleanup_thread&.alive?
+        @state.shutdown!
+        @cleanup_thread&.join(SHUTDOWN_GRACE)
+        @cleanup_thread&.kill
         @cleanup_thread = nil
+        ObjectSpace.undefine_finalizer(self)
       end
 
       private
 
-      # Called with the key's write lock held. The short admission lock makes
-      # the cap atomic across stripes and all three stores.
       def store_entry(store, key, value)
-        @capacity_lock.synchronize do
-          new_key = !store.key?(key)
-          return false if new_key && @stored_keys >= @max_keys
-
-          store[key] = value
-          @stored_keys += 1 if new_key
-          true
-        end
+        @state.store_entry(store, key, value)
       end
 
       def delete_entry(store, key)
-        @capacity_lock.synchronize do
-          value = store.delete(key)
-          @stored_keys -= 1 if value
-          value
-        end
+        @state.delete_entry(store, key)
       end
 
       def capacity_available?(store, key)
-        @capacity_lock.synchronize { store.key?(key) || @stored_keys < @max_keys }
+        @state.capacity_available?(store, key)
       end
 
       def capacity_gcra_refusal(now, delay_tolerance)
@@ -279,7 +261,7 @@ module ThrottleMachines
       # cleanup at most once per second, even with auto_cleanup disabled.
       # Rejected identity sprays must not trigger a full scan on every call.
       def reclaim_capacity
-        return unless @capacity_lock.synchronize { @stored_keys >= @max_keys }
+        return unless @state.saturated?
         return unless @capacity_cleanup_lock.try_lock
 
         begin
@@ -294,49 +276,133 @@ module ThrottleMachines
       end
 
       def with_read_lock(key, &block)
-        lock_for(key).with_read_lock(&block)
+        @state.with_read_lock(key, &block)
       end
 
       def with_write_lock(key, &block)
-        lock_for(key).with_write_lock(&block)
-      end
-
-      def lock_for(key)
-        # Hash key to determine which lock to use
-        index = key.hash.abs % @lock_pool_size
-        @locks[index]
-      end
-
-      def start_cleanup_thread
-        Thread.new do
-          loop do
-            break if @shutdown
-
-            sleep @cleanup_interval
-            break if @shutdown
-
-            clean_expired_entries
-          end
-        end
+        @state.with_write_lock(key, &block)
       end
 
       def clean_expired_entries
-        now = current_time
+        @state.clean_expired_entries
+      end
 
-        [@counters, @gcra_states, @token_buckets].each do |store|
-          store.keys.each do |key|
-            with_write_lock(key) do
-              # Re-read under the lock: a writer may have refreshed the TTL.
-              data = store[key]
-              delete_entry(store, key) if data && data[:expires_at] && data[:expires_at] <= now
+      # Holds every map, lock and counter the cleanup worker sweeps.
+      class State
+        attr_reader :counters, :gcra_states, :token_buckets
+
+        def initialize(max_keys:, lock_pool_size:, cleanup_interval:)
+          @max_keys = max_keys
+          @cleanup_interval = cleanup_interval
+          @stored_keys = 0
+          @capacity_lock = Mutex.new
+          @counters = Concurrent::Hash.new
+          @gcra_states = Concurrent::Hash.new
+          @token_buckets = Concurrent::Hash.new
+
+          # Use a striped lock pattern - pool of locks for fine-grained concurrency
+          @lock_pool_size = lock_pool_size
+          @locks = Array.new(lock_pool_size) { Concurrent::ReadWriteLock.new }
+          @shutdown = false
+        end
+
+        def start_cleanup_thread
+          Thread.new do
+            loop do
+              break if @shutdown
+
+              sleep @cleanup_interval
+              break if @shutdown
+
+              clean_expired_entries
             end
           end
         end
 
-        # No breaker state cleanup: breaker state is managed by BreakerMachines
-      rescue StandardError => e
-        # Log error but don't crash cleanup thread
-        warn "ThrottleMachines: Cleanup error: #{e.message}"
+        def shutdown!
+          @shutdown = true
+        end
+
+        def stores
+          [@counters, @gcra_states, @token_buckets]
+        end
+
+        def stored_keys
+          @capacity_lock.synchronize { @stored_keys }
+        end
+
+        def saturated?
+          @capacity_lock.synchronize { @stored_keys >= @max_keys }
+        end
+
+        def with_read_lock(key, &block)
+          lock_for(key).with_read_lock(&block)
+        end
+
+        def with_write_lock(key, &block)
+          lock_for(key).with_write_lock(&block)
+        end
+
+        # Called with the key's write lock held. The short admission lock makes
+        # the cap atomic across stripes and all three stores.
+        def store_entry(store, key, value)
+          @capacity_lock.synchronize do
+            new_key = !store.key?(key)
+            return false if new_key && @stored_keys >= @max_keys
+
+            store[key] = value
+            @stored_keys += 1 if new_key
+            true
+          end
+        end
+
+        def delete_entry(store, key)
+          @capacity_lock.synchronize do
+            value = store.delete(key)
+            @stored_keys -= 1 if value
+            value
+          end
+        end
+
+        def capacity_available?(store, key)
+          @capacity_lock.synchronize { store.key?(key) || @stored_keys < @max_keys }
+        end
+
+        def clear_all
+          @capacity_lock.synchronize do
+            @counters.clear
+            @gcra_states.clear
+            @token_buckets.clear
+            @stored_keys = 0
+          end
+        end
+
+        def clean_expired_entries
+          now = ThrottleMachines.monotonic_time
+
+          stores.each do |store|
+            store.keys.each do |key|
+              with_write_lock(key) do
+                # Re-read under the lock: a writer may have refreshed the TTL.
+                data = store[key]
+                delete_entry(store, key) if data && data[:expires_at] && data[:expires_at] <= now
+              end
+            end
+          end
+
+          # No breaker state cleanup: breaker state is managed by BreakerMachines
+        rescue StandardError => e
+          # Log error but don't crash cleanup thread
+          warn "ThrottleMachines: Cleanup error: #{e.message}"
+        end
+
+        private
+
+        def lock_for(key)
+          # Hash key to determine which lock to use
+          index = key.hash.abs % @lock_pool_size
+          @locks[index]
+        end
       end
     end
   end
