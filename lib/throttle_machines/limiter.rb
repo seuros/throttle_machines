@@ -11,6 +11,7 @@ module ThrottleMachines
       @algorithm = algorithm
       @storage = storage || ThrottleMachines.storage
       validate_algorithm!
+      validate_rate!
     end
 
     def allow?
@@ -166,6 +167,11 @@ module ThrottleMachines
     end
 
     private
+
+    def validate_rate!
+      raise ArgumentError, "limit must be positive, got #{@limit.inspect}" unless @limit.is_a?(Numeric) && @limit.positive?
+      raise ArgumentError, "period must be positive, got #{@period.inspect}" unless @period.is_a?(Numeric) && @period.positive?
+    end
 
     def validate_algorithm!
       unless Storage::Base::ALGORITHM_OPERATIONS.key?(@algorithm)
