@@ -27,7 +27,7 @@ module ThrottleMachines
     def retry_on_failure(times:, backoff: :exponential, base_delay: 1, max_delay: 60)
       @rules[:retry] = {
         max_attempts: times,
-        jitter: backoff,
+        backoff: backoff,
         base_delay: base_delay,
         max_delay: max_delay
       }
@@ -87,7 +87,8 @@ module ThrottleMachines
         max_attempts: @rules[:retry][:max_attempts],
         base_delay: @rules[:retry][:base_delay],
         max_delay: @rules[:retry][:max_delay],
-        jitter_factor: @rules[:retry][:jitter] == :exponential ? 1.0 : 0.0
+        backoff_strategy: @rules[:retry][:backoff],
+        jitter_factor: @rules[:retry][:backoff] == :exponential ? 1.0 : 0.0
       }
       @retrier = ChronoMachines::Executor.new(policy_options)
     end

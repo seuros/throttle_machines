@@ -56,9 +56,9 @@ module ThrottleMachines
       @max_attempts.times do |attempt|
         # Schedule with delay
         future = if attempt.zero?
-                   Concurrent::Promises.future { yield(attempt) }
+                   Concurrent::Promises.future_on(@executor) { yield(attempt) }
                  else
-                   Concurrent::Promises.schedule(@delay * attempt) { yield(attempt) }
+                   Concurrent::Promises.schedule_on(@executor, @delay * attempt) { yield(attempt) }
                  end
 
         # Race to resolve first_result
@@ -88,9 +88,6 @@ module ThrottleMachines
       else
         first_result.value!
       end
-    ensure
-      # Cancel pending futures
-      futures.each { |f| f.cancel if f.pending? }
     end
 
     # Run async version

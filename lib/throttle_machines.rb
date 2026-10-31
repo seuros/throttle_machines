@@ -99,19 +99,16 @@ module ThrottleMachines
     end
 
     def break_circuit(key, failures:, timeout:, &block)
-      # Delegate to BreakerMachines; use reset_timeout for open duration
-      breaker = BreakerMachines::Circuit.new(
-        key,
-        failure_threshold: failures,
-        reset_timeout: timeout
-      )
-      breaker.call(&block)
+      BreakerMachines::Registry.instance.get_or_create_dynamic_circuit(
+        key, self, { failure_threshold: failures, reset_timeout: timeout }
+      ).call(&block)
     end
 
     def retry_with(max_attempts: 3, backoff: :exponential, &block)
       # Delegate to chrono_machines
       policy_options = {
         max_attempts: max_attempts,
+        backoff_strategy: backoff,
         jitter_factor: backoff == :exponential ? 1.0 : 0.0
       }
       ChronoMachines.retry(policy_options, &block)
