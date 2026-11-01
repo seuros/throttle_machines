@@ -5,28 +5,35 @@ require 'weakref'
 
 module ThrottleMachines
   class MemoryLifecycleTest < Test
-    GC_PASSES = 10
     ALLOCATIONS_PER_PASS = 10_000
     SETTLE_TIMEOUT = 5.0
     POLL_INTERVAL = 0.01
     SWEEP_INTERVAL = 0.01
     DROPPED_STORES = 20
 
+    # `shutdown` kills the worker itself and undefines the finalizer, so the
+    # worker goes first and the store is unreferenced only afterwards. Checking
+    # collectibility before the thread has gone would be asking the store to be
+    # collected while something still holds it.
     def test_an_explicitly_shut_down_store_is_collectible_and_stops_its_worker
       workers = threads_started { @ref = shut_down_store }
-      collect_garbage
+
+      assert_empty alive(workers)
+      collect_until { !@ref.weakref_alive? }
 
       refute @ref.weakref_alive?
-      assert_empty alive(workers)
     end
 
+    # Nothing stopped these workers, so the order is the other way round: the
+    # store has to be collected first, and the finalizer collection runs is what
+    # kills the thread.
     def test_a_dropped_store_is_collectible_and_its_worker_dies
       refs = nil
       workers = threads_started { refs = DROPPED_STORES.times.map { dropped_store } }
 
       assert_equal DROPPED_STORES, workers.size
 
-      collect_garbage
+      collect_until { refs.none?(&:weakref_alive?) }
 
       assert_equal 0, refs.count(&:weakref_alive?)
       assert_empty alive(workers)
@@ -68,10 +75,16 @@ module ThrottleMachines
       sleep POLL_INTERVAL until yield || Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
     end
 
-    def collect_garbage
-      GC_PASSES.times do
+    # `GC.start` is a request, not a promise: on JRuby it is a hint to the JVM
+    # and weak references are cleared asynchronously, so a fixed number of
+    # passes proves nothing either way. Press until the condition actually
+    # holds, then let the caller's assertion report whatever is still alive.
+    def collect_until
+      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + SETTLE_TIMEOUT
+      loop do
         ALLOCATIONS_PER_PASS.times { Object.new }
         GC.start
+        break if yield || Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
       end
     end
 
