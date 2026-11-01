@@ -1,6 +1,6 @@
 [package]
 name = "throttle_machines_native"
-version = "0.3.2"
+version = "0.4.0"
 edition = "2024"
 rust-version.workspace = true
 authors = ["Abdelkader Boudih <terminale@gmail.com>"]

@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0](https://github.com/seuros/throttle_machines/compare/throttle_machines/v0.3.4...throttle_machines/v0.4.0) (2026-11-01)
+
+
+### ⚠ BREAKING CHANGES
+
+* a Storage::Base subclass implementing gcra or token_bucket must also implement reset_gcra and reset_token_bucket, or supports? reports the algorithm unavailable.
+
+### Features
+
+* bound the throttle wait by the caller's deadline ([37a7784](https://github.com/seuros/throttle_machines/commit/37a7784ca6b5eed976d5b61ca4b6d0a51502a407))
+
+
+### Bug Fixes
+
+* a failed gem push fails the release ([6c51c25](https://github.com/seuros/throttle_machines/commit/6c51c25a5f2a424c8d165df9fa04d69960808ef3))
+* a lone checkout can bundle ([5cc6824](https://github.com/seuros/throttle_machines/commit/5cc68244e7f7f3ce3a3dfc665a7e6c907648d667))
+* a reset deletes its own limiter's keys, not a pattern ([b9f93af](https://github.com/seuros/throttle_machines/commit/b9f93af050b3790f881dd7fe15882ec7f6a53f4a))
+* a spent budget raised nothing and ran unbounded ([d58240e](https://github.com/seuros/throttle_machines/commit/d58240ebb675e7ec55b4eac0886d223807eabc51))
+* backoff: selected jitter, never the backoff strategy ([f2f6a2d](https://github.com/seuros/throttle_machines/commit/f2f6a2dcdf776839bc6c1fbbeed18a4384e2fc4a))
+* both backends report a wait as a Float ([525c9a6](https://github.com/seuros/throttle_machines/commit/525c9a6e3791fbe3e93b5c35ac09f77d470c65a5))
+* bound the storage timeout by the caller's budget ([1bef8b1](https://github.com/seuros/throttle_machines/commit/1bef8b1d191a421a0f0bdcb9d4d818851e1360b8))
+* break_circuit shares one circuit, limiters reject a zero rate ([acf5bd8](https://github.com/seuros/throttle_machines/commit/acf5bd8d46b2a655af9b970889e8e47fb5bbf188))
+* **storage:** let a memory store be garbage collected ([e173f89](https://github.com/seuros/throttle_machines/commit/e173f89bf056dbf75a0d514fd7a857bdeddcc50a))
+
 ## [0.3.4](https://github.com/seuros/throttle_machines/compare/throttle_machines/v0.3.3...throttle_machines/v0.3.4) (2026-10-30)
 
 
