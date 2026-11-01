@@ -112,7 +112,7 @@ module ThrottleMachines
 
           {
             allowed: allow,
-            retry_after: allow ? 0 : (tat - now - delay_tolerance),
+            retry_after: allow ? 0.0 : (tat - now - delay_tolerance),
             tat: tat
           }
         end
@@ -131,7 +131,7 @@ module ThrottleMachines
 
           {
             allowed: allow,
-            retry_after: allow ? 0 : (tat - now - delay_tolerance),
+            retry_after: allow ? 0.0 : (tat - now - delay_tolerance),
             tat: tat
           }
         end
@@ -159,7 +159,7 @@ module ThrottleMachines
 
             {
               allowed: true,
-              retry_after: 0,
+              retry_after: 0.0,
               tokens_remaining: bucket[:tokens].floor
             }
           else
@@ -190,7 +190,7 @@ module ThrottleMachines
           if token_available?(current_tokens, now, refill_rate)
             {
               allowed: true,
-              retry_after: 0,
+              retry_after: 0.0,
               tokens_remaining: [current_tokens - 1, 0].max.floor
             }
           else
