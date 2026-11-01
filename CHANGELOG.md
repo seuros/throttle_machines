@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1](https://github.com/seuros/throttle_machines/compare/throttle_machines/v0.4.0...throttle_machines/v0.4.1) (2026-11-01)
+
+
+### Features
+
+* gems:push_all fetches the release itself ([0d161ce](https://github.com/seuros/throttle_machines/commit/0d161cedd7983e6ac10b787d072ee9a82b858333))
+* pass a rubygems OTP through GEM_OTP ([6ee50b0](https://github.com/seuros/throttle_machines/commit/6ee50b07703bd123fb902780a2aeae30601c74a5))
+* verify release gem checksums before pushing ([409258c](https://github.com/seuros/throttle_machines/commit/409258cedd8844272eb4fb16f301b141b4c087c7))
+
+
+### Bug Fixes
+
+* enable the rb-sys compiled fallback so new Rubies can build ([9f1f1b6](https://github.com/seuros/throttle_machines/commit/9f1f1b6289d697ff2f3894820e7826a9ddbd1244))
+* raise the breaker_machines floor to 0.24.0 ([897ff41](https://github.com/seuros/throttle_machines/commit/897ff41e49b0b15fc96b067ceb38ab5f254a514d))
+* raise the chrono_machines floor to 0.12.1 ([e6bfcbe](https://github.com/seuros/throttle_machines/commit/e6bfcbebf222e0b553ef445e4b8bf80de7d7be74))
+
 ## [0.4.0](https://github.com/seuros/throttle_machines/compare/throttle_machines/v0.3.4...throttle_machines/v0.4.0) (2026-11-01)
 
 
