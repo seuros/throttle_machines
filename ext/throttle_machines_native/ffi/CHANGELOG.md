@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/seuros/throttle_machines/compare/throttle_machines_native-v0.3.2...throttle_machines_native-v0.4.0) (2026-11-01)
+
+
+### Features
+
+* bound the throttle wait by the caller's deadline ([37a7784](https://github.com/seuros/throttle_machines/commit/37a7784ca6b5eed976d5b61ca4b6d0a51502a407))
+
 ## [0.3.2](https://github.com/seuros/throttle_machines/compare/throttle_machines_native-v0.3.1...throttle_machines_native-v0.3.2) (2026-10-20)
 
 ## [0.3.1](https://github.com/seuros/throttle_machines/compare/throttle_machines_native-v0.3.0...throttle_machines_native-v0.3.1) (2026-10-10)
