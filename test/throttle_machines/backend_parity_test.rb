@@ -26,7 +26,7 @@ module ThrottleMachines
     end
 
     def test_the_token_bucket_answers_what_both_backends_answer
-      answers = walk do |now|
+      answers = walk do
         decision = @store.check_token_bucket('parity', 5, 10.0, 60)
         [decision[:allowed], decision[:retry_after].round(4),
          decision[:retry_after].class.name, decision[:tokens_remaining]]
@@ -36,7 +36,7 @@ module ThrottleMachines
     end
 
     def test_the_gcra_answers_what_both_backends_answer
-      answers = walk do |now|
+      answers = walk do
         decision = @store.check_gcra_limit('parity', 0.05, 0.1, 60)
         [decision[:allowed], decision[:retry_after].round(4),
          decision[:retry_after].class.name]
@@ -51,7 +51,7 @@ module ThrottleMachines
       Array.new(BUCKET.length) do |index|
         now = EPOCH + (index * STEP)
         @store.define_singleton_method(:current_time) { now }
-        yield(now)
+        yield
       end
     end
   end
