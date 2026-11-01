@@ -31,7 +31,7 @@ Gem::Specification.new do |spec|
   spec.add_dependency 'zeitwerk', '~> 2.7'
 
   # Ecosystem dependencies - require Rails 8.1+ compatible versions
-  spec.add_dependency 'breaker_machines', '>= 0.22.1'
+  spec.add_dependency 'breaker_machines', '>= 0.24.0'
   spec.add_dependency 'chrono_machines', '>= 0.12.1'
   spec.add_dependency 'deadline_machines', '>= 0.1'
 
