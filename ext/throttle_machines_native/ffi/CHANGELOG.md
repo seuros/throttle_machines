@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.1](https://github.com/seuros/throttle_machines/compare/throttle_machines_native-v0.4.0...throttle_machines_native-v0.4.1) (2026-11-01)
+
+
+### Bug Fixes
+
+* enable the rb-sys compiled fallback so new Rubies can build ([9f1f1b6](https://github.com/seuros/throttle_machines/commit/9f1f1b6289d697ff2f3894820e7826a9ddbd1244))
+
 ## [0.4.0](https://github.com/seuros/throttle_machines/compare/throttle_machines_native-v0.3.2...throttle_machines_native-v0.4.0) (2026-11-01)
 
 
