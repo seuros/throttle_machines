@@ -3,7 +3,8 @@
 module ThrottleMachines
   module Storage
     class Cache < Base
-      GLOB_SPECIALS = /[?\[\]\\]/
+      # The wildcard a caller's pattern keeps; everything else is a literal.
+      PATTERN_SPECIALS = /[?\[\]\\]/
 
       def initialize(options = {})
         super
@@ -33,10 +34,13 @@ module ThrottleMachines
       end
 
       def clear(pattern = nil)
-        @cache.delete_matched(matcher_for("#{@prefix}:#{pattern || '*'}"))
-      rescue NotImplementedError
-        raise UnsupportedOperationError,
-              "#{@cache.class} cannot delete by pattern; reset limiters individually with Limiter#reset!"
+        delete_matched(matcher_for("#{@prefix}#{KEY_SEPARATOR}#{pattern || GLOB_WILDCARD}"))
+      end
+
+      # The window and the bucket index a counter was written under are unknown
+      # here, so the counters go by a prefix of the key's own namespace.
+      def reset_key(key)
+        delete_matched(prefix_matcher("#{@prefix}#{KEY_SEPARATOR}#{key}#{KEY_SEPARATOR}"))
       end
 
       def healthy?
@@ -59,10 +63,24 @@ module ThrottleMachines
         window
       end
 
-      def matcher_for(glob)
-        return glob.gsub(GLOB_SPECIALS) { |char| "\\#{char}" } if @cache.respond_to?(:redis)
+      def delete_matched(matcher)
+        @cache.delete_matched(matcher)
+      rescue NotImplementedError
+        raise UnsupportedOperationError,
+              "#{@cache.class} cannot delete by pattern; reset limiters individually with Limiter#reset!"
+      end
 
-        Regexp.new("^#{Regexp.escape(glob).gsub('\*', '.*')}")
+      def matcher_for(glob)
+        return glob.gsub(PATTERN_SPECIALS) { |char| "\\#{char}" } if @cache.respond_to?(:redis)
+
+        Regexp.new("^#{Regexp.escape(glob).gsub(Regexp.escape(GLOB_WILDCARD), '.*')}")
+      end
+
+      def prefix_matcher(literal)
+        return "#{escape_glob(literal)}#{GLOB_WILDCARD}" if @cache.respond_to?(:redis)
+
+        # ActiveSupport only prepends a store's namespace to a `^` source.
+        Regexp.new("^#{Regexp.escape(literal)}")
       end
 
       def wall_time

@@ -39,6 +39,16 @@ module ThrottleMachines
         @cached = true
         [1, 5]
       end
+
+      def del(*keys)
+        @calls << [:del, keys]
+        keys.size
+      end
+
+      def scan(_cursor, match:, count:)
+        @calls << [:scan, match, count]
+        ['0', []]
+      end
     end
 
     # Hands out one connection, like ConnectionPool#with.
@@ -107,6 +117,28 @@ module ThrottleMachines
         assert_equal NOSCRIPT, error.message
         assert_equal %i[evalsha eval], redis.calls.map(&:first)
       end
+    end
+
+    def test_a_reset_deletes_the_one_key_its_algorithm_wrote
+      redis = FakeRedis.new
+      storage = Storage::Redis.new(redis: redis)
+
+      storage.reset_gcra('account:1')
+      storage.reset_token_bucket('account:1')
+      storage.reset_counter('account:1', 60)
+
+      assert_equal [[:del, ['throttle:account:1']], [:del, ['throttle:account:1']],
+                    [:del, ['throttle:account:1:60']]], redis.calls
+    end
+
+    def test_reset_key_scans_the_keys_own_namespace_with_the_key_as_a_literal
+      redis = FakeRedis.new
+      storage = Storage::Redis.new(redis: redis)
+
+      storage.reset_key('ip:[::1]*')
+
+      assert_equal [[:del, ['throttle:ip:[::1]*']],
+                    [:scan, 'throttle:ip:\[::1\]\*:*', Storage::Redis::SCAN_BATCH]], redis.calls
     end
 
     def test_falls_back_on_the_same_pooled_connection

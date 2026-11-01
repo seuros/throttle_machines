@@ -95,8 +95,10 @@ module ThrottleMachines
       case @algorithm
       when :fixed_window
         @storage.reset_counter(@key, @period)
-      else
-        @storage.clear("#{@key}*")
+      when :gcra
+        @storage.reset_gcra(@key)
+      when :token_bucket
+        @storage.reset_token_bucket(@key)
       end
     end
 

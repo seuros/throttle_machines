@@ -37,6 +37,10 @@ module ThrottleMachines
         }
       end
 
+      def reset_gcra(_key)
+        true
+      end
+
       # Token bucket operations
       def check_token_bucket(_key, capacity, _refill_rate, _ttl)
         {
@@ -54,8 +58,16 @@ module ThrottleMachines
         }
       end
 
+      def reset_token_bucket(_key)
+        true
+      end
+
       # Utility operations
       def clear(_pattern = nil)
+        true
+      end
+
+      def reset_key(_key)
         true
       end
 

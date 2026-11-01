@@ -127,6 +127,23 @@ module ThrottleMachines
       assert_equal 'kept', namespaced.read('unrelated')
     end
 
+    def test_reset_key_deletes_only_that_key_and_the_windows_it_owns
+      @storage.increment_counter('account:1', 60)
+      @storage.increment_counter('account:10', 60)
+
+      @storage.reset_key('account:1')
+
+      assert_equal 0, @storage.get_counter('account:1', 60)
+      assert_equal 1, @storage.get_counter('account:10', 60)
+    end
+
+    def test_reset_key_passes_the_key_to_redis_as_a_literal
+      store = RedisLikeStore.new
+      Storage::Cache.new(cache_store: store).reset_key('ip:[::1]?*')
+
+      assert_equal ['throttle_machines:ip:\[::1\]\?\*:*'], store.matchers
+    end
+
     def test_clear_passes_an_escaped_glob_to_redis
       store = RedisLikeStore.new
       Storage::Cache.new(cache_store: store).clear('ip:[::1]?*')

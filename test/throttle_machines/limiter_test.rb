@@ -39,6 +39,45 @@ module ThrottleMachines
       assert_predicate limiter, :allow?
     end
 
+    # A reset belongs to one limiter: not to a neighbour whose key it prefixes,
+    # and not to whatever its metacharacters would match as a pattern.
+    CONFINEMENT_KEYS = %w[account:1 account:10 a.c abc].freeze
+
+    %i[fixed_window gcra token_bucket].each do |algorithm|
+      define_method("test_#{algorithm}_reset_is_confined_to_its_own_limiter") do
+        storage = Storage::Memory.new(auto_cleanup: false)
+        limiters = CONFINEMENT_KEYS.to_h do |key|
+          limiter = Limiter.new(key, limit: 1, period: 600, algorithm: algorithm, storage: storage)
+          limiter.throttle!
+          [key, limiter]
+        end
+        limiters.each { |key, limiter| assert_not_predicate limiter, :allow?, key }
+
+        limiters['account:1'].reset!
+
+        assert_predicate limiters['account:1'], :allow?
+        assert_not_predicate limiters['account:10'], :allow?
+
+        limiters['a.c'].reset!
+
+        assert_predicate limiters['a.c'], :allow?
+        assert_not_predicate limiters['abc'], :allow?
+      end
+    end
+
+    def test_global_reset_of_a_key_spares_a_key_it_prefixes
+      pacer = ThrottleMachines.limiter('account:1', limit: 1, period: 600, algorithm: :gcra)
+      neighbour = ThrottleMachines.limiter('account:10', limit: 1, period: 600, algorithm: :gcra)
+      counter = ThrottleMachines.limiter('account:1', limit: 1, period: 600)
+      [pacer, neighbour, counter].each(&:throttle!)
+
+      ThrottleMachines.reset!('account:1')
+
+      assert_predicate pacer, :allow?
+      assert_predicate counter, :allow?
+      assert_not_predicate neighbour, :allow?
+    end
+
     def test_unified_api
       call_count = 0
       error_count = 0

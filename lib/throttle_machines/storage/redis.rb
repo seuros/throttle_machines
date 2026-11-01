@@ -22,6 +22,9 @@ module ThrottleMachines
       PEEK_GCRA_SHA = Digest::SHA1.hexdigest(PEEK_GCRA_SCRIPT)
       PEEK_TOKEN_BUCKET_SHA = Digest::SHA1.hexdigest(PEEK_TOKEN_BUCKET_SCRIPT)
 
+      # Keys a single SCAN round trip asks for.
+      SCAN_BATCH = 100
+
       def initialize(options = {})
         super
         @redis = options[:redis] || options[:client] || options[:pool]
@@ -74,6 +77,10 @@ module ThrottleMachines
         }
       end
 
+      def reset_gcra(key)
+        delete_state(key)
+      end
+
       # Token bucket operations (atomic via Lua)
       def check_token_bucket(key, capacity, refill_rate, ttl)
         result = run_script(TOKEN_BUCKET_SCRIPT, TOKEN_BUCKET_SHA,
@@ -81,6 +88,10 @@ module ThrottleMachines
                             argv: [capacity, refill_rate, ttl, current_time])
 
         token_bucket_result(result, refill_rate)
+      end
+
+      def reset_token_bucket(key)
+        delete_state(key)
       end
 
       # Peek methods for non-consuming checks
@@ -112,17 +123,14 @@ module ThrottleMachines
 
       # Utility operations
       def clear(pattern = nil)
-        # Use SCAN instead of KEYS to avoid blocking in production
-        cursor = '0'
-        scan_pattern = pattern ? prefixed(pattern) : "#{@prefix}*"
+        delete_matching(pattern ? prefixed(pattern) : "#{@prefix}#{GLOB_WILDCARD}")
+      end
 
-        with_redis do |redis|
-          loop do
-            cursor, keys = redis.scan(cursor, match: scan_pattern, count: 100)
-            redis.del(*keys) unless keys.empty?
-            break if cursor == '0'
-          end
-        end
+      # The window a counter was written under is unknown here, so the counters
+      # go by a glob over the key's own namespace; the key itself is a literal.
+      def reset_key(key)
+        delete_state(key)
+        delete_matching("#{escape_glob(prefixed(key))}#{KEY_SEPARATOR}#{GLOB_WILDCARD}")
       end
 
       def healthy?
@@ -132,6 +140,23 @@ module ThrottleMachines
       end
 
       private
+
+      def delete_state(key)
+        with_redis { |r| r.del(prefixed(key)) }
+      end
+
+      # SCAN instead of KEYS, to avoid blocking in production.
+      def delete_matching(scan_pattern)
+        cursor = '0'
+
+        with_redis do |redis|
+          loop do
+            cursor, keys = redis.scan(cursor, match: scan_pattern, count: SCAN_BATCH)
+            redis.del(*keys) unless keys.empty?
+            break if cursor == '0'
+          end
+        end
+      end
 
       # `result` is [allowed, tokens]: the balance after an admission, or the
       # fractional balance a refusal waits on. Matches Storage::Memory.

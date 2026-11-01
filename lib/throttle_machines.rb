@@ -76,7 +76,7 @@ module ThrottleMachines
 
     def reset!(key = nil)
       if key
-        storage.clear("#{key}*")
+        storage.reset_key(key)
       else
         storage.clear
         # Reset storage instance to force recreation with defaults

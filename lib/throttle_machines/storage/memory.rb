@@ -137,6 +137,10 @@ module ThrottleMachines
         end
       end
 
+      def reset_gcra(key)
+        with_write_lock(key) { delete_entry(@gcra_states, key) }
+      end
+
       # Token bucket operations (atomic simulation)
       def check_token_bucket(key, capacity, refill_rate, ttl)
         reclaim_capacity
@@ -205,22 +209,24 @@ module ThrottleMachines
         end
       end
 
+      def reset_token_bucket(key)
+        with_write_lock(key) { delete_entry(@token_buckets, key) }
+      end
+
       # No circuit breaker operations here: breaker state is owned by BreakerMachines
 
       # Utility operations
       def clear(pattern = nil)
         if pattern
-          regex = Regexp.new(pattern.gsub('*', '.*'))
-
-          # Clear matching keys from all stores
-          @state.stores.each do |store|
-            store.keys.each do |k|
-              with_write_lock(k) { delete_entry(store, k) } if k&.match?(regex)
-            end
-          end
+          regex = glob_to_regexp(pattern)
+          delete_where { |stored_key| stored_key.match?(regex) }
         else
           @state.clear_all
         end
+      end
+
+      def reset_key(key)
+        delete_where { |stored_key| owned_by?(stored_key, key) }
       end
 
       def healthy?
@@ -236,6 +242,14 @@ module ThrottleMachines
       end
 
       private
+
+      def delete_where
+        @state.stores.each do |store|
+          store.keys.each do |stored_key|
+            with_write_lock(stored_key) { delete_entry(store, stored_key) } if yield(stored_key)
+          end
+        end
+      end
 
       def store_entry(store, key, value)
         @state.store_entry(store, key, value)
