@@ -39,13 +39,15 @@ monotonic clock that evicts keys once they have fully recovered.
 Storage is capped at **4096 keys per shard** by default (at most 65536 keys
 with the default 16 shards). Configure it with
 `KeyedGcra::new(params).max_keys_per_shard(1024)`. A full shard first reclaims
-recovered keys, then refuses unknown identities without allocating state.
+recovered keys, in batches: it sweeps once an eighth of it could have
+recovered, and refuses unknown identities without allocating state until then.
 Existing identities keep their rate limits; free slots in other shards are
 not borrowed. Zero rejects all identities.
 
 `evict_at` is only a cleanup trigger, not the cap. Automatic sweeps wait until
-a key could have recovered, so a rejected identity spray does not repeatedly
-scan unrecovered state. `peek` also respects the cap and may reclaim recovered
+an eighth of the shard could have recovered, so neither busy keys nor a
+rejected identity spray make every check rescan the shard. `evict` reclaims
+every recovered key whenever it is called. `peek` also respects the cap and may reclaim recovered
 keys, but never consumes an admission. Capacity refusals have state `0.0` and
 a retry hint based on the next possible recovery (not a reservation).
 

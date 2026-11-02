@@ -17,28 +17,34 @@ const DEFAULT_SHARDS: NonZeroUsize = NonZeroUsize::new(16).expect("16 is non-zer
 /// Start sweeping a shard of recovered keys at this many entries.
 const DEFAULT_EVICT_AT: usize = 4096;
 const DEFAULT_MAX_KEYS_PER_SHARD: usize = 4096;
+/// An automatic sweep waits until this fraction of the shard could have
+/// recovered, so each one reclaims a batch instead of rescanning for one key.
+const SWEEP_BATCH: usize = 8;
 
 #[derive(Debug)]
 struct Shard<K> {
     tats: HashMap<K, f64>,
-    // Lower bound on the next recovery. Stale early deadlines are safe.
+    // When the next automatic sweep may run; `None` runs it at once.
     next_sweep: Option<f64>,
 }
 
 impl<K> Shard<K> {
-    fn sweep(&mut self, now: f64) {
-        if self.next_sweep.is_some_and(|deadline| deadline > now) {
-            return;
+    /// Reclaim recovered keys, unless too few could have recovered yet.
+    fn sweep_due(&mut self, now: f64) {
+        if self.next_sweep.is_none_or(|deadline| deadline <= now) {
+            self.sweep(now);
         }
-        let mut next: Option<f64> = None;
-        self.tats.retain(|_, tat| {
-            if *tat <= now {
-                return false;
-            }
-            next = Some(next.map_or(*tat, |deadline| deadline.min(*tat)));
-            true
+    }
+
+    /// Reclaim every recovered key and schedule the next automatic sweep
+    /// for when an eighth of those left could have recovered.
+    fn sweep(&mut self, now: f64) {
+        self.tats.retain(|_, tat| *tat > now);
+        let mut tats: Vec<f64> = self.tats.values().copied().collect();
+        self.next_sweep = (!tats.is_empty()).then(|| {
+            let batch = (tats.len() / SWEEP_BATCH).max(1);
+            *tats.select_nth_unstable_by(batch - 1, f64::total_cmp).1
         });
-        self.next_sweep = next;
     }
 }
 
@@ -91,7 +97,7 @@ impl<K: Hash + Eq, S: BuildHasher> KeyedGcra<K, S> {
 
     /// Sweep recovered keys before checking a shard with at least `evict_at`
     /// entries (default 4096). This is a cleanup trigger, not a storage cap.
-    /// Sweeps are skipped until a tracked key could have recovered.
+    /// Sweeps are skipped until an eighth of the shard could have recovered.
     #[must_use]
     pub const fn evict_at(mut self, evict_at: usize) -> Self {
         self.evict_at = evict_at;
@@ -101,8 +107,9 @@ impl<K: Hash + Eq, S: BuildHasher> KeyedGcra<K, S> {
     /// Cap each shard at `max_keys` entries (default 4096, 65536 total with
     /// the default 16 shards). Zero rejects all new identities.
     ///
-    /// Recovered keys are reclaimed first. When a shard is full, unknown keys
-    /// are refused without allocating; existing keys keep their rate limits.
+    /// Recovered keys are reclaimed first, in batches: a full shard sweeps
+    /// once an eighth of it could have recovered, and refuses unknown keys
+    /// until then without allocating; existing keys keep their rate limits.
     /// Unused capacity in another shard is not borrowed.
     ///
     /// # Panics
@@ -149,7 +156,7 @@ impl<K: Hash + Eq, S: BuildHasher> KeyedGcra<K, S> {
     {
         let mut shard = self.shard(key);
         if shard.tats.len() >= self.evict_at || shard.tats.len() >= self.max_keys_per_shard {
-            shard.sweep(now);
+            shard.sweep_due(now);
         }
         let tat = shard.tats.get(key).copied().unwrap_or(0.0);
         if !shard.tats.contains_key(key) && shard.tats.len() >= self.max_keys_per_shard {
@@ -163,11 +170,6 @@ impl<K: Hash + Eq, S: BuildHasher> KeyedGcra<K, S> {
                     shard.tats.insert(key.to_owned(), decision.state);
                 }
             }
-            shard.next_sweep = Some(
-                shard
-                    .next_sweep
-                    .map_or(decision.state, |deadline| deadline.min(decision.state)),
-            );
         }
         decision
     }
@@ -191,7 +193,7 @@ impl<K: Hash + Eq, S: BuildHasher> KeyedGcra<K, S> {
         let mut shard = self.shard(key);
         // Reclaiming recovered state does not consume rate-limit capacity.
         if shard.tats.len() >= self.max_keys_per_shard {
-            shard.sweep(now);
+            shard.sweep_due(now);
         }
         let tat = shard.tats.get(key).copied().unwrap_or(0.0);
         if !shard.tats.contains_key(key) && shard.tats.len() >= self.max_keys_per_shard {

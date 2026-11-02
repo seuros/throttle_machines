@@ -166,3 +166,37 @@ fn lowering_cap_cannot_silently_violate_bound() {
     limiter.check_at(&1, 1.0);
     let _limiter = limiter.max_keys_per_shard(0);
 }
+
+#[test]
+fn a_full_shard_sweeps_in_batches() {
+    let limiter = bounded(16);
+    for key in 0..16 {
+        assert!(limiter.check_at(&key, f64::from(key) * 0.01).allowed);
+    }
+    // TATs run 0.1 to 0.25; at 0.1 only key 0 could have recovered, too few
+    // for a sweep's batch of two, so the first spray sweep schedules the
+    // next for when key 1 recovers and refuses meanwhile.
+    assert!(!limiter.check_at(&100, 0.05).allowed);
+    let refused = limiter.check_at(&101, 0.1);
+    assert!(!refused.allowed);
+    assert!((refused.retry_after - 0.01).abs() < 1e-9, "{refused:?}");
+    assert_eq!(limiter.len(), 16);
+
+    assert!(limiter.check_at(&102, 0.11).allowed);
+    assert_eq!(
+        limiter.len(),
+        15,
+        "keys 0 and 1 reclaimed together, 102 tracked"
+    );
+}
+
+#[test]
+fn evict_reclaims_every_recovered_key_whatever_the_schedule() {
+    let limiter = bounded(16);
+    for key in 0..16 {
+        limiter.check_at(&key, f64::from(key) * 0.01);
+    }
+    assert!(!limiter.check_at(&100, 0.05).allowed);
+    assert_eq!(limiter.evict_before(0.1), 1);
+    assert_eq!(limiter.len(), 15);
+}
