@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.5.0](https://github.com/seuros/throttle_machines/compare/throttle-machines-v0.4.0...throttle-machines-v0.5.0) (2026-11-02)
+
+
+### Features
+
+* refund a keyed admission ([d3c1aa0](https://github.com/seuros/throttle_machines/commit/d3c1aa0b95797e0574253b767e43c229ddb5de40))
+
+
+### Bug Fixes
+
+* sweep a keyed shard once an eighth of it could have recovered ([48b6ad9](https://github.com/seuros/throttle_machines/commit/48b6ad996b6ecdcf4b9b7c543d7970d0ffd8291a))
+
 ## [0.4.0](https://github.com/seuros/throttle_machines/compare/throttle-machines-v0.3.1...throttle-machines-v0.4.0) (2026-11-01)
 
 

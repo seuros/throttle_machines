@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.3](https://github.com/seuros/throttle_machines/compare/throttle_machines/v0.4.2...throttle_machines/v0.4.3) (2026-11-02)
+
+
+### Features
+
+* refund a keyed admission ([d3c1aa0](https://github.com/seuros/throttle_machines/commit/d3c1aa0b95797e0574253b767e43c229ddb5de40))
+
+
+### Bug Fixes
+
+* sweep a keyed shard once an eighth of it could have recovered ([48b6ad9](https://github.com/seuros/throttle_machines/commit/48b6ad996b6ecdcf4b9b7c543d7970d0ffd8291a))
+
 ## [0.4.2](https://github.com/seuros/throttle_machines/compare/throttle_machines/v0.4.1...throttle_machines/v0.4.2) (2026-11-01)
 
 
