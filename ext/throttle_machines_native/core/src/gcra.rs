@@ -35,6 +35,25 @@ impl GcraParams {
 /// GCRA gate. State is the TAT (`0.0` for the first request).
 pub struct Gcra;
 
+impl Gcra {
+    /// The TAT before the admission that left it at `tat`: undoes a `check`
+    /// that allowed. A result at or before `now` means fully recovered.
+    ///
+    /// ```
+    /// use throttle_machines::gate::Gate;
+    /// use throttle_machines::gcra::{Gcra, GcraParams};
+    /// let params = GcraParams { emission_interval: 0.5, delay_tolerance: 1.0 };
+    /// let admitted = Gcra::check(2.0, 1.0, params);
+    /// assert!(admitted.allowed);
+    /// assert_eq!(Gcra::refund(admitted.state, params), 2.0);
+    /// ```
+    #[inline]
+    #[must_use]
+    pub fn refund(tat: f64, params: GcraParams) -> f64 {
+        tat - params.emission_interval
+    }
+}
+
 /// Whether `tat` is within `delay_tolerance` of `now`, allowing for the
 /// rounding a running sum of emission intervals accumulates.
 #[inline]

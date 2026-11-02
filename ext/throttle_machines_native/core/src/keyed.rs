@@ -203,6 +203,35 @@ impl<K: Hash + Eq, S: BuildHasher> KeyedGcra<K, S> {
         Gcra::peek(tat, now, self.params)
     }
 
+    /// Give back one admission [`check`](Self::check) granted `key`, as if it
+    /// had been refused: for admitting a request only when every limiter it
+    /// spends admits it. Refunding an admission that was never granted grants
+    /// capacity that was never earned.
+    pub fn refund<Q>(&self, key: &Q)
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
+        self.refund_at(key, self.now());
+    }
+
+    /// [`refund`](Self::refund) at an explicit time on this limiter's clock.
+    /// A key left fully recovered is dropped, freeing its slot.
+    pub fn refund_at<Q>(&self, key: &Q, now: f64)
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
+        let mut shard = self.shard(key);
+        let Some(tat) = shard.tats.get_mut(key) else {
+            return;
+        };
+        *tat = Gcra::refund(*tat, self.params);
+        if *tat <= now {
+            shard.tats.remove(key);
+        }
+    }
+
     /// Drop every key that has fully recovered; returns how many were dropped.
     pub fn evict(&self) -> usize {
         self.evict_before(self.now())

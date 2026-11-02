@@ -51,6 +51,10 @@ every recovered key whenever it is called. `peek` also respects the cap and may 
 keys, but never consumes an admission. Capacity refusals have state `0.0` and
 a retry hint based on the next possible recovery (not a reservation).
 
+`refund` gives back one admission `check` granted, for requests that spend
+several limiters and must be admitted by all of them or none: check each, and
+refund the ones that admitted when a later one refuses.
+
 The cap bounds entry count, not arbitrary key byte lengths. Bound identity
 length at ingress as well when keys are attacker-controlled.
 

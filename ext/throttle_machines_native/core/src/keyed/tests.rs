@@ -168,6 +168,39 @@ fn lowering_cap_cannot_silently_violate_bound() {
 }
 
 #[test]
+fn a_refund_undoes_one_admission() {
+    let limiter = limiter();
+    for _ in 0..3 {
+        assert!(limiter.check_at("alice", 1.0).allowed);
+    }
+    assert!(!limiter.peek_at("alice", 1.0).allowed);
+    limiter.refund_at("alice", 1.0);
+    assert!(
+        limiter.check_at("alice", 1.0).allowed,
+        "the refunded slot is free again"
+    );
+    assert!(!limiter.check_at("alice", 1.0).allowed);
+}
+
+#[test]
+fn refunding_a_new_key_frees_its_slot() {
+    let limiter = bounded(1);
+    assert!(limiter.check_at(&1, 1.0).allowed);
+    limiter.refund_at(&1, 1.0);
+    assert!(limiter.is_empty());
+    assert!(
+        limiter.check_at(&2, 1.0).allowed,
+        "the slot went back to the shard"
+    );
+    limiter.refund_at(&3, 1.0);
+    assert_eq!(
+        limiter.len(),
+        1,
+        "refunding an untracked key changes nothing"
+    );
+}
+
+#[test]
 fn a_full_shard_sweeps_in_batches() {
     let limiter = bounded(16);
     for key in 0..16 {
