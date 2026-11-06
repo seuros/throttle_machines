@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.1](https://github.com/seuros/throttle_machines/compare/throttle-machines-v0.5.0...throttle-machines-v0.5.1) (2026-11-06)
+
+
+### Bug Fixes
+
+* keep test modules out of the packaged crate ([7f28c6e](https://github.com/seuros/throttle_machines/commit/7f28c6e2a72a9d4a30ec809be8f8a9c9462fa20e))
+
 ## [0.5.0](https://github.com/seuros/throttle_machines/compare/throttle-machines-v0.4.0...throttle-machines-v0.5.0) (2026-11-02)
 
 
