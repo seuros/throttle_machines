@@ -10,7 +10,7 @@ repository = "https://github.com/seuros/throttle_machines"
 readme = "README.md"
 keywords = ["rate-limiting", "throttling", "gcra", "token-bucket", "no-std"]
 categories = ["algorithms"]
-
+exclude = ["src/**/tests.rs", "tests/"]
 [lib]
 crate-type = ["lib"]
 
