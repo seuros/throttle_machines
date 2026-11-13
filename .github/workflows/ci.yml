@@ -46,6 +46,24 @@ jobs:
           time cargo test --workspace
           echo "::endgroup::"
 
+      # `std` is a default feature, so the workspace run above never builds the
+      # no_std core that the crate advertises.
+      - name: Lint and test the core without and with std
+        working-directory: ext/throttle_machines_native/core
+        run: |
+          for features in "" std; do
+            echo "::group::features: ${features:-none}"
+            cargo clippy --no-default-features --features "$features" --all-targets -- -D warnings
+            cargo test --no-default-features --features "$features" --lib
+            echo "::endgroup::"
+          done
+
+      - name: Build the no_std core for bare metal
+        working-directory: ext/throttle_machines_native/core
+        run: |
+          rustup target add thumbv7em-none-eabihf
+          cargo build --no-default-features --target thumbv7em-none-eabihf
+
       - name: Check crate can be published
         run: |
           cd ext/throttle_machines_native/core

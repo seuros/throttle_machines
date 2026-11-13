@@ -1,3 +1,7 @@
+extern crate std;
+
+use std::vec::Vec;
+
 use super::*;
 use crate::test_support::{allowed, denied};
 
