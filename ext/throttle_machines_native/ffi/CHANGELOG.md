@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.5.0](https://github.com/seuros/throttle_machines/compare/throttle_machines_native-v0.4.2...throttle_machines_native-v0.5.0) (2026-11-16)
+
+
+### ⚠ BREAKING CHANGES
+
+* rebuild throttle on the fleet conventions with exact gate counts
+
+### Features
+
+* rebuild throttle on the fleet conventions with exact gate counts ([94d19f3](https://github.com/seuros/throttle_machines/commit/94d19f3abbcbe8c8b05563561e9a68d06ca8d079))
+
 ## [0.4.2](https://github.com/seuros/throttle_machines/compare/throttle_machines_native-v0.4.1...throttle_machines_native-v0.4.2) (2026-11-02)
 
 ## [0.4.1](https://github.com/seuros/throttle_machines/compare/throttle_machines_native-v0.4.0...throttle_machines_native-v0.4.1) (2026-11-01)
