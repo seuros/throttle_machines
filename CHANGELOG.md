@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0](https://github.com/seuros/throttle_machines/compare/throttle_machines/v0.4.3...throttle_machines/v0.5.0) (2026-11-16)
+
+
+### ⚠ BREAKING CHANGES
+
+* rebuild throttle on the fleet conventions with exact gate counts
+
+### Features
+
+* rebuild throttle on the fleet conventions with exact gate counts ([94d19f3](https://github.com/seuros/throttle_machines/commit/94d19f3abbcbe8c8b05563561e9a68d06ca8d079))
+
+
+### Bug Fixes
+
+* keep test modules out of the packaged crate ([7f28c6e](https://github.com/seuros/throttle_machines/commit/7f28c6e2a72a9d4a30ec809be8f8a9c9462fa20e))
+
 ## [0.4.3](https://github.com/seuros/throttle_machines/compare/throttle_machines/v0.4.2...throttle_machines/v0.4.3) (2026-11-02)
 
 

@@ -279,14 +279,14 @@ dependencies = [
 
 [[package]]
 name = "throttle-machines"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "matryona-machines",
 ]
 
 [[package]]
 name = "throttle_machines_native"
-version = "0.4.2"
+version = "0.5.0"
 dependencies = [
  "magnus",
  "matryona-machines",
