@@ -1,84 +1,100 @@
 # throttle-machines
 
-Rate limiting as pure functions over caller-held state.
-No clocks, no locks, no allocation: you store the state, pass it in with the
-current time, and get a decision plus the next state back.
+Rate limiting on a clock you supply. `no_std`, allocation-free, no `unsafe`;
+the crate reads no clock and does no I/O. `now` is a `core::time::Duration`
+since an epoch you pick, and so is every span.
 
 ## Algorithms
 
-Every algorithm implements the [`Gate`] trait (`check` consumes, `peek` doesn't):
+Each limiter is a small `Copy` value, a validated policy plus the state it
+has reached, behind the shared [`Gate`] contract:
 
-- **GCRA** (Generic Cell Rate Algorithm): smooth, precise per-request spacing.
-- **Token Bucket**: burst capacity with a steady refill rate.
-- **Fixed Window**: a counter per window.
+- **GCRA** (`Gcra`, `GcraPolicy`): one call per emission interval, with a
+  delay tolerance for bursts. Smooth and exact.
+- **Token bucket** (`TokenBucket`, `TokenBucketPolicy`): a burst of
+  `capacity`, one token earned every `refill_every`.
+- **Fixed window** (`FixedWindow`, `FixedWindowPolicy`): `limit` calls per
+  window.
 
-## Usage
+`check(now)` admits one call and answers exactly how many more the gate
+would admit at the same instant, or a `Refusal`, which changes nothing:
+`Throttled`, or for GCRA `Overflow` when the admission would push the TAT
+past `Duration::MAX`. `peek(now)` answers the same without consuming,
+`retry_after(now)` how long until the next admission (`Duration::MAX` when
+no instant a `Duration` holds admits one), and `refund()` gives one
+admission back. Nothing saturates into a count: a window or refill due past
+`Duration::MAX` is never due.
 
-```rust
-use throttle_machines::gate::Gate;
-use throttle_machines::gcra::{Gcra, GcraParams};
-
-// 10 requests per second, no burst allowance.
-let params = GcraParams { emission_interval: 0.1, delay_tolerance: 0.0 };
-
-let mut tat = 0.0; // Theoretical Arrival Time, stored by the caller
-let first = Gcra::check(tat, 1.0, params);
-assert!(first.allowed);
-tat = first.state;
-
-let second = Gcra::check(tat, 1.0, params);
-assert!(!second.allowed);
-assert!(second.retry_after > 0.0);
-```
-
-### Per-key limiting
-
-With `std`, `KeyedGcra` holds the per-key state for you: a sharded map on a
-monotonic clock that evicts keys once they have fully recovered.
-
-Storage is capped at **4096 keys per shard** by default (at most 65536 keys
-with the default 16 shards). Configure it with
-`KeyedGcra::new(params).max_keys_per_shard(1024)`. A full shard first reclaims
-recovered keys, in batches: it sweeps once an eighth of it could have
-recovered, and refuses unknown identities without allocating state until then.
-Existing identities keep their rate limits; free slots in other shards are
-not borrowed. Zero rejects all identities.
-
-`evict_at` is only a cleanup trigger, not the cap. Automatic sweeps wait until
-an eighth of the shard could have recovered, so neither busy keys nor a
-rejected identity spray make every check rescan the shard. `evict` reclaims
-every recovered key whenever it is called. `peek` also respects the cap and may reclaim recovered
-keys, but never consumes an admission. Capacity refusals have state `0.0` and
-a retry hint based on the next possible recovery (not a reservation).
-
-`refund` gives back one admission `check` granted, for requests that spend
-several limiters and must be admitted by all of them or none: check each, and
-refund the ones that admitted when a later one refuses.
-
-The cap bounds entry count, not arbitrary key byte lengths. Bound identity
-length at ingress as well when keys are attacker-controlled.
+Policies are built with `new`, which answers `None` for a value the limiter
+cannot honour (a zero interval, refill or window; a GCRA burst ceiling,
+`delay_tolerance + emission_interval`, past `Duration::MAX` or holding more
+than `u64::MAX` intervals, which no `u64` count could answer), or with `per(period,
+limit, ..)`, which spreads `limit` calls over `period`, rounding the interval
+up to the nanosecond so the rate never exceeds the one asked for.
 
 ```rust
-use throttle_machines::{GcraParams, KeyedGcra};
+use core::num::NonZeroU64;
+use core::time::Duration;
+use throttle_machines::{Gate, Gcra, GcraPolicy, Refusal};
 
-// 10 requests per second per client, bursts of 3.
-let limiter = KeyedGcra::<String>::new(GcraParams::from_rate(10.0, 3));
+// 10 calls per second, bursts of 3.
+let ten = NonZeroU64::new(10).unwrap();
+let policy = GcraPolicy::per(Duration::from_secs(1), ten, NonZeroU64::new(3).unwrap()).unwrap();
+let mut gcra = Gcra::new(policy);
 
-let decision = limiter.check("203.0.113.7");
-assert!(decision.allowed);
+let now = Duration::from_secs(60);
+assert_eq!(gcra.check(now), Ok(2));
+assert_eq!(gcra.check(now), Ok(1));
+assert_eq!(gcra.check(now), Ok(0));
+assert_eq!(gcra.check(now), Err(Refusal::Throttled));
+assert_eq!(gcra.retry_after(now), Duration::from_millis(100));
 ```
 
-## no_std
+A caller that keeps state elsewhere between calls (a database row, a cache
+entry) reads it back with `tat()`, `tokens()`/`refilled_at()` or
+`count()`/`window_start()` and resumes with `restored`.
 
-The crate is `no_std` with the default `std` feature disabled:
+## Per-key limiting
+
+The `std` feature adds `KeyedGcra`, which holds a TAT per key in a sharded,
+mutex-guarded map and evicts keys once they have fully recovered.
+
+Each shard holds at most `max_keys_per_shard` keys (4096 by default, 65536
+with the default 16 shards). A full shard first reclaims recovered keys, in
+batches: it sweeps once an eighth of it could have recovered, and refuses
+untracked keys with `Refusal::Full` until then without allocating. Tracked
+keys keep their limits; free slots in other shards are not borrowed.
+`evict_at` is a cleanup trigger after admissions, not the cap; `evict(now)`
+reclaims every recovered key whenever it is called. `peek` never reclaims.
+
+`refund(key, now)` gives back one admission `check` granted, for calls that
+spend several limiters and must be admitted by all of them or none.
+
+The cap bounds entry count, not key length: bound identities at ingress when
+they are attacker-controlled.
+
+```rust
+# #[cfg(feature = "std")] {
+use core::num::NonZeroU64;
+use std::time::{Duration, Instant};
+use throttle_machines::{GcraPolicy, KeyedGcra};
+
+let ten = NonZeroU64::new(10).unwrap();
+let policy = GcraPolicy::per(Duration::from_secs(1), ten, NonZeroU64::new(3).unwrap()).unwrap();
+let limiter = KeyedGcra::<String>::new(policy);
+
+let epoch = Instant::now();
+assert_eq!(limiter.check("203.0.113.7", epoch.elapsed()), Ok(2));
+# }
+```
 
 ```toml
 [dependencies]
-throttle-machines = { version = "0.2", default-features = false }
+throttle-machines = { version = ">=0.6", features = ["std"] }
 ```
 
 ## License
 
 MIT
 
-[`Gate`]: https://docs.rs/throttle-machines/latest/throttle_machines/gate/trait.Gate.html
+[`Gate`]: https://docs.rs/throttle-machines/latest/throttle_machines/trait.Gate.html

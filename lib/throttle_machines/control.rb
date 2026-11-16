@@ -1,6 +1,9 @@
 # frozen_string_literal: true
 
 module ThrottleMachines
+  # Composes a rate limit, a circuit breaker and a retry around a block:
+  # retry outermost, then the breaker, then the limiter. Spans are Integer
+  # nanoseconds.
   class Control
     attr_reader :key, :limiter, :breaker, :retrier
 
@@ -15,82 +18,58 @@ module ThrottleMachines
     end
 
     def break_on(failures:, within:, timeout: nil)
-      timeout ||= within
-      @rules[:breaker] = {
-        failure_threshold: failures,
-        timeout: timeout,
-        window: within
-      }
+      @rules[:breaker] = { failure_threshold: failures, timeout: timeout || within, window: within }
       self
     end
 
-    def retry_on_failure(times:, backoff: :exponential, base_delay: 1, max_delay: 60)
-      @rules[:retry] = {
-        max_attempts: times,
-        backoff: backoff,
-        base_delay: base_delay,
-        max_delay: max_delay
-      }
+    # Retries through ChronoMachines: a backoff shape (Exponential, Constant
+    # or Fibonacci, spans in Integer nanoseconds) and the attempt cap, as
+    # ChronoMachines::Executor takes them, then its runtime keywords.
+    def retry_on_failure(strategy, max_attempts, **runtime)
+      @rules[:retry] = [strategy, max_attempts, runtime]
       self
     end
 
     def call(&block)
       setup_components
 
-      # Build execution chain: Retry -> Breaker -> Limiter -> User Code
-      execution_chain = block
-
-      # Wrap with rate limiter (innermost, checked first)
+      chain = block
       if @limiter
-        limiter_wrapped = execution_chain
-        execution_chain = proc { @limiter.throttle!(&limiter_wrapped) }
+        limited = chain
+        chain = proc { @limiter.throttle!(&limited) }
       end
-
-      # Wrap with circuit breaker
       if @breaker
-        breaker_wrapped = execution_chain
-        execution_chain = proc { @breaker.call(&breaker_wrapped) }
+        guarded = chain
+        chain = proc { @breaker.call(&guarded) }
       end
-
-      # Wrap with retry logic (outermost, handles all failures)
       if @retrier
-        retry_wrapped = execution_chain
-        execution_chain = proc { @retrier.call(&retry_wrapped) }
+        retried = chain
+        chain = proc { @retrier.call(&retried) }
       end
-
-      execution_chain.call
+      chain.call
     end
 
     private
 
     def setup_components
       if @rules[:limit] && !@limiter
-        @limiter = ThrottleMachines.limiter(@key,
-                                            limit: @rules[:limit][:rate],
-                                            period: @rules[:limit][:period],
-                                            algorithm: @rules[:limit][:algorithm])
+        rule = @rules[:limit]
+        @limiter = ThrottleMachines.limiter(@key, limit: rule[:rate], period: rule[:period],
+                                                  algorithm: rule[:algorithm])
       end
 
       if @rules[:breaker] && !@breaker
+        rule = @rules[:breaker]
         @breaker = BreakerMachines::Circuit.new(
-          @key,
-          failure_threshold: @rules[:breaker][:failure_threshold],
-          failure_window: @rules[:breaker][:window],
-          reset_timeout: @rules[:breaker][:timeout]
+          @key, Breakers.policy(rule[:failure_threshold], rule[:window], rule[:timeout]),
+          exceptions: [Breakers::Failure]
         )
       end
 
       return unless @rules[:retry] && !@retrier
 
-      # Use ChronoMachines for retry functionality
-      policy_options = {
-        max_attempts: @rules[:retry][:max_attempts],
-        base_delay: @rules[:retry][:base_delay],
-        max_delay: @rules[:retry][:max_delay],
-        backoff_strategy: @rules[:retry][:backoff],
-        jitter_factor: @rules[:retry][:backoff] == :exponential ? 1.0 : 0.0
-      }
-      @retrier = ChronoMachines::Executor.new(policy_options)
+      strategy, max_attempts, runtime = @rules[:retry]
+      @retrier = ChronoMachines::Executor.new(strategy, max_attempts, **runtime)
     end
   end
 end

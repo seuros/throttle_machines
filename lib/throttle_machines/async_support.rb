@@ -1,18 +1,16 @@
 # frozen_string_literal: true
 
-# Async/Fiber support for ThrottleMachines.
+# Fiber-aware waiting for ThrottleMachines limiters.
 #
 # The async gem is optional. When an Async task is active, waits yield back to
-# the scheduler; otherwise the limiter falls back to normal sleep.
+# the scheduler; otherwise the limiter sleeps the thread.
 
 module ThrottleMachines
-  # Fiber-aware rate limiter helpers.
+  # Fiber-aware rate limiter helpers, included into Limiter.
   module AsyncSupport
     def allowed_async?
       allow?
     end
-
-    alias allow_async? allowed_async?
 
     def check_async
       return false unless allowed_async?
@@ -21,6 +19,10 @@ module ThrottleMachines
       true
     end
 
+    # Admits one call, waiting for the limiter while it throttles: at most
+    # `max_wait` Integer nanoseconds (nil for no limit of its own), and never
+    # past the ambient deadline_machines budget. Raises ThrottledError when
+    # the next admission would come too late.
     def throttle_async(max_wait: nil, &block)
       caller_budget = DeadlineMachines.current
 
@@ -30,16 +32,14 @@ module ThrottleMachines
             throttle!
           rescue ThrottledError => e
             caller_budget&.check!
-            wait_time = [e.retry_after.to_f, 0.0].max
-            raise if budget.clamp_sleep(wait_time) < wait_time
+            wait = e.retry_after
+            raise if budget.clamp_sleep(wait) < wait
 
-            sleep_for(wait_time)
+            sleep_for(wait)
             next
           end
 
-          return block.call if block
-
-          return true
+          return block ? block.call : true
         end
       end
     end
@@ -47,22 +47,19 @@ module ThrottleMachines
     private
 
     # Use Async's fiber-aware sleep when in an async context.
-    def sleep_for(duration)
+    def sleep_for(nanoseconds)
+      seconds = Rational(nanoseconds, NS_PER_SECOND)
       if (task = current_async_task)
-        task.sleep(duration)
+        task.sleep(seconds)
       else
-        sleep(duration)
+        sleep(seconds)
       end
     end
 
     def current_async_task
       return nil unless defined?(::Async::Task)
 
-      if ::Async::Task.respond_to?(:current?)
-        ::Async::Task.current?
-      else
-        ::Async::Task.current
-      end
+      ::Async::Task.current?
     rescue StandardError
       nil
     end
@@ -70,5 +67,3 @@ module ThrottleMachines
 end
 
 ThrottleMachines::Limiter.include(ThrottleMachines::AsyncSupport)
-
-warn "[ThrottleMachines] Async support loaded" if ENV['DEBUG_MATRYOSHKA']

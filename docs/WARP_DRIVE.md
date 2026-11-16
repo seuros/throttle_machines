@@ -10,8 +10,11 @@ Your rate limiters need somewhere to store their state. Like choosing between im
 
 | Storage Type | Speed | Persistence | Distributed | Use Case |
 |--------------|-------|-------------|-------------|----------|
-| **Memory Crystals** | Warp 10 | No | No | Single ship operations |
-| **Redis Quantum Core** | Warp 8 | Yes | Yes | Fleet coordination |
+| **Memory Crystals** | Warp 10 | No | No | Single process operations |
+| **Redis Quantum Core** | Warp 8 | Yes | One host | Every process aboard one ship |
+| **Rails Cache Relay** | Warp 6 | Yes | Yes | Fleet coordination (`:fixed_window` only) |
+
+Every span below is Integer nanoseconds: periods, TTLs, cleanup intervals. No Floats, no `.seconds`.
 
 ---
 
@@ -22,13 +25,15 @@ Memory crystals are like your ship's internal computer - blazing fast but isolat
 
 ### Configuration
 ```ruby
+NS = ThrottleMachines::NS_PER_SECOND # 1_000_000_000
+
 # Default - no configuration needed!
 ThrottleMachines.configure do |config|
-  # Memory storage is automatic
+  # Memory storage is automatic (config.default_storage = :memory)
 end
 
-# Each limiter gets its own crystal
-limiter = ThrottleMachines.limiter("phaser_array", limit: 10, period: 60)
+# Every limiter in the process shares the one crystal: ThrottleMachines.storage
+limiter = ThrottleMachines.limiter("phaser_array", limit: 10, period: 60 * NS)
 ```
 
 ### Characteristics
@@ -36,6 +41,7 @@ limiter = ThrottleMachines.limiter("phaser_array", limit: 10, period: 60)
 - **Isolation**: Each process has its own storage
 - **Volatility**: Data lost on restart
 - **Simplicity**: Zero configuration
+- **Bounded**: At most 65,536 entries (`max_keys:`); new identities are refused with `:full` when the crystal is saturated, active ones are never evicted
 
 ### Best For
 - Development environments
@@ -48,7 +54,11 @@ limiter = ThrottleMachines.limiter("phaser_array", limit: 10, period: 60)
 ## 🔴 Redis Quantum Core
 
 ### The Analogy
-Redis is like a space station's central computer - all ships in your fleet can share the same data. Even if individual ships go offline, the station remembers everything.
+Redis is like a space station's central computer - every process docked to it shares the same data. Even if individual processes go offline, the station remembers everything.
+
+The station keeps the only clock that counts: every Lua script reads Redis `TIME`, so processes docked from any number of hosts share one store and one clock, and no ship's chronometer ever reaches the limits. If the station's own clock jumps (an NTP step, a failover to a replica on another host), the limits see the jump.
+
+Upgrading from a release whose scripts took the caller's clock: GCRA state is now a hash, and stored instants count from a Redis `TIME` second, so clear the old throttle keys (`ThrottleMachines.storage.clear`) once before the new scripts run.
 
 ### Basic Configuration
 ```ruby
@@ -56,28 +66,23 @@ require 'redis'
 require 'throttle_machines'
 
 # Simple Redis connection
-ThrottleMachines.configure do |config|
-  config.storage = ThrottleMachines::Storage::Redis.new(
-    redis: Redis.new(url: "redis://localhost:6379/0")
-  )
-end
+ThrottleMachines.storage = ThrottleMachines::Storage::Redis.new(
+  redis: Redis.new(url: "redis://localhost:6379/0")
+)
 ```
 
 ### Fleet-Ready Configuration
 ```ruby
 require 'redis'
 
-# Redis with connection pooling (built-in with ActiveSupport)
+# A single hardened client (redis-rb's own timeouts are in seconds - its API, not ours)
 redis = Redis.new(
   url: ENV.fetch('REDIS_URL', 'redis://localhost:6379/0'),
   timeout: 1,
-  reconnect_attempts: 3,
-  reconnect_delay: 0.2
+  reconnect_attempts: 3
 )
 
-ThrottleMachines.configure do |config|
-  config.storage = ThrottleMachines::Storage::Redis.new(redis: redis)
-end
+ThrottleMachines.storage = ThrottleMachines::Storage::Redis.new(redis: redis)
 ```
 
 ### Mission-Critical Configuration
@@ -85,7 +90,7 @@ end
 # Production-grade setup with failover
 class FleetCommand
   def self.configure!
-    # Primary Redis cluster
+    # Primary Redis (connection_pool and redis-rb timeouts are seconds - their API)
     primary_pool = ConnectionPool.new(size: 20, timeout: 5) do
       Redis.new(
         url: ENV['REDIS_PRIMARY_URL'],
@@ -93,19 +98,18 @@ class FleetCommand
         ssl: true,
         timeout: 1,
         connect_timeout: 2,
-        reconnect_attempts: 3,
-        reconnect_delay: 0.5,
-        reconnect_delay_max: 2.0
+        reconnect_attempts: 3
       )
     end
 
-    ThrottleMachines.configure do |config|
-      config.storage = ThrottleMachines::Storage::Redis.new(
-        pool: primary_pool,
-        prefix: "throttle:#{ENV['ENVIRONMENT']}:",  # Namespace by environment
-        expires_in: 7200  # Auto-cleanup after 2 hours
-      )
+    # Keys expire on their own: a fixed window lives one window,
+    # GCRA and token bucket state lives twice the limiter's period.
+    ThrottleMachines.storage = ThrottleMachines::Storage::Redis.new(
+      pool: primary_pool,
+      prefix: "throttle:#{ENV['ENVIRONMENT']}:"  # Namespace by environment
+    )
 
+    ThrottleMachines.configure do |config|
       # Configure default algorithm for the fleet
       config.default_algorithm = :gcra
     end
@@ -115,9 +119,29 @@ end
 
 ---
 
+## 🛰️ Rails Cache Relay
+
+### The Analogy
+When the fleet is scattered across star systems (hosts), nobody shares a monotonic clock. The relay counts fixed windows in any `ActiveSupport::Cache` store, aligned to the wall-clock epoch, so every ship counts the same window.
+
+```ruby
+ThrottleMachines.storage = ThrottleMachines::Storage::Cache.new(cache_store: Rails.cache)
+# or, inside Rails: config.default_storage = :cache
+
+limiter = ThrottleMachines.limiter("fleet_api", limit: 1000, period: 60 * NS, algorithm: :fixed_window)
+```
+
+It supports `:fixed_window` only; building a GCRA or token bucket limiter on it raises `RangeError`. When the store fails to count, requests are admitted; pass `fail_closed: true` to throttle them instead.
+
+---
+
 ## 🛸 Storage Patterns
 
 ### Pattern 1: Multi-Region Fleet Coordination
+Each region keeps its own station, and every host in a region shares its Redis and its clock.
+
+`ThrottleMachines.limiter` always uses `ThrottleMachines.storage`; to pick a store per limiter, build `ThrottleMachines::Limiter` directly.
+
 ```ruby
 class MultiRegionThrottle
   def initialize(region)
@@ -132,11 +156,13 @@ class MultiRegionThrottle
     )
   end
 
-  def create_limiter(name, **options)
-    ThrottleMachines.limiter(
+  def create_limiter(name, limit:, period:, algorithm: :gcra)
+    ThrottleMachines::Limiter.new(
       "#{@region}:#{name}",
-      storage: @storage,
-      **options
+      limit: limit,
+      period: period,
+      algorithm: algorithm,
+      storage: @storage
     )
   end
 end
@@ -145,8 +171,8 @@ end
 us_throttle = MultiRegionThrottle.new("us-east")
 eu_throttle = MultiRegionThrottle.new("eu-west")
 
-us_limiter = us_throttle.create_limiter("api", limit: 1000, period: 60)
-eu_limiter = eu_throttle.create_limiter("api", limit: 1000, period: 60)
+us_limiter = us_throttle.create_limiter("api", limit: 1000, period: 60 * NS)
+eu_limiter = eu_throttle.create_limiter("api", limit: 1000, period: 60 * NS)
 ```
 
 ### Pattern 2: Tiered Storage Strategy
@@ -162,18 +188,18 @@ class TieredThrottleSystem
     )
   end
 
-  def create_limiter(name, tier: :standard, **options)
+  def create_limiter(name, limit:, period:, tier: :standard, algorithm: :gcra)
     storage = case tier
     when :local
-      @memory_storage  # Ultra-fast, single-server
+      @memory_storage  # Ultra-fast, single process
     when :distributed
-      @redis_storage   # Coordinated across fleet
+      @redis_storage   # Coordinated across every process on the host
     else
       # Hybrid approach could be implemented here
       @redis_storage
     end
 
-    ThrottleMachines.limiter(name, storage: storage, **options)
+    ThrottleMachines::Limiter.new(name, limit: limit, period: period, algorithm: algorithm, storage: storage)
   end
 end
 ```
@@ -191,22 +217,16 @@ class ResilientThrottle
     end
   end
 
-  def create_limiter(name, **options)
-    ThrottleMachines.limiter(name, **options).tap do |limiter|
-      # Add custom error handling
-      limiter.define_singleton_method(:allowed?) do
-        begin
-          super()
-        rescue Redis::ConnectionError => e
-          # Log the error
-          Rails.logger.error "Redis primary failed: #{e.message}"
+  # Limiters are frozen, so wrap the check instead of patching the limiter
+  def allow?(limiter)
+    limiter.allow?
+  rescue Redis::BaseConnectionError => e
+    # Log the error
+    Rails.logger.error "Redis primary failed: #{e.message}"
 
-          # Could implement fallback logic here
-          # For now, fail open (allow the request)
-          true
-        end
-      end
-    end
+    # Could implement fallback logic here
+    # For now, fail open (allow the request)
+    true
   end
 end
 ```
@@ -229,12 +249,12 @@ end
 
 2. **Key Expiration Strategy**
    ```ruby
-   # Auto-expire keys to prevent memory bloat
-   ThrottleMachines::Storage::Redis.new(
-     pool: redis_pool,
-     expires_in: 3600  # 1 hour - should be > your longest period
-   )
+   # Keys auto-expire from the limiter's own period - nothing to configure:
+   #   :fixed_window           -> one window
+   #   :gcra / :token_bucket   -> 2 * period
+   ThrottleMachines.limiter("scanner", limit: 100, period: 3600 * NS)  # state gone within 2 hours
    ```
+   There is no application-level key cap on Redis: set `maxmemory` on the server, and remember that evicting active keys resets their limits.
 
 3. **Namespace Organization**
    ```ruby
@@ -248,20 +268,16 @@ end
 ### Memory Storage Optimization
 
 ```ruby
-# For memory storage, implement periodic cleanup
-class MemoryMaintenanceCrew
-  def self.cleanup!
-    return unless using_memory_storage?
+# The memory crystal ships with its own maintenance crew: a background
+# sweeper reclaims expired entries every cleanup_interval (default 60 s).
+ThrottleMachines.storage = ThrottleMachines::Storage::Memory.new(
+  max_keys: 10_000,                # bound the entry count
+  cleanup_interval: 5 * 60 * NS    # sweep every 5 minutes
+)
 
-    # Clear expired entries periodically
-    Thread.new do
-      loop do
-        sleep 300  # Every 5 minutes
-        ThrottleMachines.storage.cleanup_expired!
-      end
-    end
-  end
-end
+# No background thread at all (expired entries are still reclaimed on
+# demand when the crystal saturates, at most once per second)
+ThrottleMachines.storage = ThrottleMachines::Storage::Memory.new(auto_cleanup: false)
 ```
 
 ---
@@ -271,22 +287,22 @@ end
 ### Redis Monitoring
 ```ruby
 class ThrottleMonitor
-  def self.stats
-    storage = ThrottleMachines.configuration.storage
-    return {} unless storage.is_a?(ThrottleMachines::Storage::Redis)
+  # Pass the same client (or pool checkout) you handed to Storage::Redis
+  def self.stats(redis)
+    return {} unless ThrottleMachines.storage.is_a?(ThrottleMachines::Storage::Redis)
 
-    storage.with_redis do |redis|
-      {
-        total_keys: redis.dbsize,
-        throttle_keys: redis.keys("throttle:*").count,
-        memory_usage: redis.info("memory")["used_memory_human"],
-        connected_clients: redis.info("clients")["connected_clients"]
-      }
-    end
+    {
+      total_keys: redis.dbsize,
+      throttle_keys: redis.scan_each(match: "throttle:*").count,  # SCAN, never KEYS
+      memory_usage: redis.info("memory")["used_memory_human"],
+      connected_clients: redis.info("clients")["connected_clients"]
+    }
   end
 
   def self.health_check
-    ThrottleMachines.limiter("health_check", limit: 1, period: 1).allowed?
+    return { status: "unhealthy", storage: "redis" } unless ThrottleMachines.storage.healthy?
+
+    ThrottleMachines.limiter("health_check", limit: 1, period: 1 * NS).allow?
     { status: "healthy", storage: "redis" }
   rescue => e
     { status: "unhealthy", error: e.message }
@@ -300,36 +316,26 @@ end
 
 ### Redis Connection Lost
 ```ruby
-# Implement circuit breaker for Redis failures
+# Don't hand-roll it: put a BreakerMachines circuit in front of Redis.
+# Opens after 3 connection failures within 30 s, stays open 30 s,
+# then one successful probe closes it.
 class StorageCircuitBreaker
   def initialize
-    @failure_count = 0
-    @circuit_open = false
-    @last_failure = nil
+    @circuit = ThrottleMachines::Breakers.dynamic(
+      "storage:redis", self, 3, 30 * NS, 30 * NS,
+      exceptions: [Redis::BaseConnectionError],
+      fallback: true,  # Fail open - allow requests when storage is down
+      on_open: -> { Rails.logger.error "Storage circuit opened" }
+    )
   end
 
-  def with_circuit
-    return yield if @circuit_open && Time.now - @last_failure < 30
-
-    begin
-      result = yield
-      @failure_count = 0  # Reset on success
-      @circuit_open = false
-      result
-    rescue Redis::ConnectionError => e
-      @failure_count += 1
-      @last_failure = Time.now
-
-      if @failure_count >= 3
-        @circuit_open = true
-        Rails.logger.error "Storage circuit opened after #{@failure_count} failures"
-      end
-
-      # Fail open - allow requests when storage is down
-      true
-    end
+  def with_circuit(&)
+    @circuit.call(&)
   end
 end
+
+shield = StorageCircuitBreaker.new
+shield.with_circuit { limiter.allow? }  # => true while Redis is down
 ```
 
 ---
@@ -344,11 +350,16 @@ end
 - Maximum performance needed
 
 ### Choose Redis Storage When:
-- Running multiple servers
+- Running multiple processes on one host
 - Need persistent rate limits
-- Building distributed systems
-- Sharing limits across services
+- Need GCRA or token bucket shared across processes
+- Sharing limits across services on the same host
 - Production deployments
+
+### Choose Rails Cache Storage When:
+- Running multiple servers
+- Building distributed systems
+- A fixed window is precise enough
 
 ---
 

@@ -1,6 +1,8 @@
 # frozen_string_literal: true
 
 module ThrottleMachines
+  # Rails controller helpers. `period:` is Integer nanoseconds; responses
+  # report waits in whole seconds, rounded up.
   module ControllerHelpers
     extend ActiveSupport::Concern
 
@@ -15,10 +17,10 @@ module ThrottleMachines
       key ||= default_throttle_key
 
       limiter = ThrottleMachines.limiter(key, limit: limit, period: period, algorithm: algorithm)
-
-      render_rate_limited(limiter) unless limiter.allow?
-
+      limiter.throttle!
       set_rate_limit_headers(limiter)
+    rescue ThrottledError
+      render_rate_limited(limiter)
     end
 
     def with_throttle(key = nil, limit:, period:, &block)
@@ -53,27 +55,26 @@ module ThrottleMachines
 
     def render_rate_limited(limiter)
       set_rate_limit_headers(limiter)
+      wait = limiter.retry_after.ceildiv(NS_PER_SECOND)
 
       respond_to do |format|
         format.json do
-          render json: {
-            error: 'Rate limit exceeded',
-            retry_after: limiter.retry_after
-          }, status: :too_many_requests
+          render json: { error: 'Rate limit exceeded', retry_after: wait }, status: :too_many_requests
         end
 
         format.html do
-          render plain: "Rate limit exceeded. Please try again in #{limiter.retry_after} seconds.",
+          render plain: "Rate limit exceeded. Please try again in #{wait} seconds.",
                  status: :too_many_requests
         end
       end
     end
 
     def set_rate_limit_headers(limiter)
+      wait = limiter.retry_after.ceildiv(NS_PER_SECOND)
       response.headers['X-RateLimit-Limit'] = limiter.limit.to_s
       response.headers['X-RateLimit-Remaining'] = limiter.remaining.to_s
-      response.headers['X-RateLimit-Reset'] = (Time.now.to_i + limiter.retry_after).to_s
-      response.headers['Retry-After'] = limiter.retry_after.ceil.to_s
+      response.headers['X-RateLimit-Reset'] = (Time.now.to_i + wait).to_s
+      response.headers['Retry-After'] = wait.to_s
     end
   end
 end

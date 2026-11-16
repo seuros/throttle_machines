@@ -1,6 +1,8 @@
 # frozen_string_literal: true
 
 module ThrottleMachines
+  # Rack middleware applying limiters per path. `period:` is Integer
+  # nanoseconds; responses report waits in whole seconds, rounded up.
   class Middleware
     def initialize(app, &config_block)
       @app = app
@@ -70,18 +72,16 @@ module ThrottleMachines
     end
 
     def rate_limit_response(limiter)
+      wait = limiter.retry_after.ceildiv(NS_PER_SECOND)
       headers = {
         'Content-Type' => 'application/json',
         'X-RateLimit-Limit' => limiter.limit.to_s,
         'X-RateLimit-Remaining' => limiter.remaining.to_s,
-        'X-RateLimit-Reset' => (Time.now.to_i + limiter.retry_after).to_s,
-        'Retry-After' => limiter.retry_after.ceil.to_s
+        'X-RateLimit-Reset' => (Time.now.to_i + wait).to_s,
+        'Retry-After' => wait.to_s
       }
 
-      body = JSON.generate({
-                             error: 'Rate limit exceeded',
-                             retry_after: limiter.retry_after
-                           })
+      body = JSON.generate({ error: 'Rate limit exceeded', retry_after: wait })
 
       [429, headers, [body]]
     end

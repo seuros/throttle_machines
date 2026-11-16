@@ -9,15 +9,15 @@ ThrottleMachines::RackMiddleware.enabled = true
 # Tests will configure their own specific rules
 unless Rails.env.test?
   # Configure rate limiting rules
-  ThrottleMachines::RackMiddleware.throttle('ip', limit: 100, period: 60, &:ip)
+  ThrottleMachines::RackMiddleware.throttle('ip', limit: 100, period: 60 * ThrottleMachines::NS_PER_SECOND, &:ip)
 
   # Different limits for API endpoints
-  ThrottleMachines::RackMiddleware.throttle('api', limit: 1000, period: 3600) do |req|
+  ThrottleMachines::RackMiddleware.throttle('api', limit: 1000, period: 3600 * ThrottleMachines::NS_PER_SECOND) do |req|
     "api:#{req.ip}" if req.path.start_with?('/api/')
   end
 
   # Aggressive limiting for payment endpoints
-  ThrottleMachines::RackMiddleware.throttle('payment', limit: 10, period: 60) do |req|
+  ThrottleMachines::RackMiddleware.throttle('payment', limit: 10, period: 60 * ThrottleMachines::NS_PER_SECOND) do |req|
     "payment:#{req.ip}" if req.path == '/test/payment'
   end
 end

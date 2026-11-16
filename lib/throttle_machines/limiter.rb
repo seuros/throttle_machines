@@ -1,188 +1,123 @@
 # frozen_string_literal: true
 
 module ThrottleMachines
+  # `limit` calls per `period` (Integer nanoseconds) for one key, decided by
+  # `algorithm` over shared storage. A runtime object: its keywords have no
+  # core counterpart. Every answer in time is Integer nanoseconds.
   class Limiter
-    attr_reader :key, :limit, :period, :algorithm, :storage
+    ALGORITHMS = %i[fixed_window gcra token_bucket].freeze
+
+    attr_reader :key, :limit, :period, :algorithm, :storage, :policy
 
     def initialize(key, limit:, period:, algorithm: :fixed_window, storage: nil)
       @key = key
-      @limit = limit
-      @period = period
+      @limit = positive(limit, 'limit')
+      @period = positive(period, 'period')
       @algorithm = algorithm
       @storage = storage || ThrottleMachines.storage
       validate_algorithm!
-      validate_rate!
+      @policy = build_policy
+      freeze
     end
 
+    # Whether a call would be admitted now, consuming nothing.
     def allow?
-      allowed = case @algorithm
-                when :fixed_window
-                  # Don't increment here, just check
-                  count = @storage.get_counter(@key, @period)
-                  count < @limit
-                when :gcra
-                  result = @storage.peek_gcra_limit(
-                    @key,
-                    @period.to_f / @limit,  # emission_interval
-                    0                       # delay_tolerance (no burst)
-                  )
-                  result[:allowed]
-                when :token_bucket
-                  result = @storage.peek_token_bucket(
-                    @key,
-                    @limit,                 # capacity
-                    @limit.to_f / @period   # refill_rate
-                  )
-                  result[:allowed]
-                else
-                  raise ArgumentError, "Unknown algorithm: #{@algorithm}"
-                end
-
-      # Instrument the check
+      allowed = peek.is_a?(Integer)
       Instrumentation.rate_limit_checked(self, allowed: allowed, remaining: nil)
-
       allowed
     end
 
+    # Admits one call or raises ThrottledError, then runs the block. An
+    # admission reports the count the check itself answered, which equals
+    # `remaining` at that instant (test/throttle_machines/remaining_parity_test.rb)
+    # and cannot race another caller; a refusal's `retry_after` costs a
+    # storage read, made only while instrumentation is active.
     def throttle!
-      case @algorithm
-      when :fixed_window
-        # Increment and check atomically
-        count = @storage.increment_counter(@key, @period)
-        if count > @limit
-          Instrumentation.rate_limit_throttled(self, retry_after: retry_after)
-          raise ThrottledError, self
-        end
-      when :gcra
-        result = @storage.check_gcra_limit(
-          @key,
-          @period.to_f / @limit,  # emission_interval
-          0,                      # delay_tolerance (no burst)
-          (@period * 2).to_i      # ttl
-        )
-        unless result[:allowed]
-          Instrumentation.rate_limit_throttled(self, retry_after: retry_after)
-          raise ThrottledError, self
-        end
-      when :token_bucket
-        result = @storage.check_token_bucket(
-          @key,
-          @limit,                 # capacity
-          @limit.to_f / @period,  # refill_rate
-          (@period * 2).to_i      # ttl
-        )
-        unless result[:allowed]
-          Instrumentation.rate_limit_throttled(self, retry_after: retry_after)
-          raise ThrottledError, self
-        end
-      else
-        raise ArgumentError, "Unknown algorithm: #{@algorithm}"
+      left = check
+      unless left.is_a?(Integer)
+        Instrumentation.rate_limit_throttled(self, retry_after: retry_after) if Instrumentation.active?
+        raise ThrottledError, self
       end
 
-      # If we get here, the request was allowed
-      # Calculate remaining after the operation
-      remaining_count = begin
-        remaining
-      rescue StandardError
-        nil
-      end
-      Instrumentation.rate_limit_allowed(self, remaining: remaining_count)
-
+      Instrumentation.rate_limit_allowed(self, remaining: left) if Instrumentation.active?
       yield if block_given?
     end
 
     def reset!
       case @algorithm
-      when :fixed_window
-        @storage.reset_counter(@key, @period)
-      when :gcra
-        @storage.reset_gcra(@key)
-      when :token_bucket
-        @storage.reset_token_bucket(@key)
+      when :fixed_window then @storage.reset_counter(@key, @period)
+      when :gcra then @storage.reset_gcra(@key)
+      when :token_bucket then @storage.reset_token_bucket(@key)
       end
     end
 
+    # Calls still admitted now: the window's or bucket's count; for GCRA, the
+    # calls its burst admits back to back (one without a burst).
     def remaining
-      case @algorithm
-      when :fixed_window
-        count = @storage.get_counter(@key, @period)
-        [@limit - count, 0].max
-      when :gcra
-        # GCRA doesn't have a simple "remaining" count
-        # Just return 1 or 0 based on current state
-        result = @storage.peek_gcra_limit(
-          @key,
-          @period.to_f / @limit,
-          0
-        )
-        result[:allowed] ? 1 : 0
-      when :token_bucket
-        result = @storage.peek_token_bucket(
-          @key,
-          @limit,
-          @limit.to_f / @period
-        )
-        result[:tokens_remaining].to_i
-      else
-        0
-      end
+      answer = peek
+      answer.is_a?(Integer) ? answer : 0
     end
 
+    # Integer nanoseconds until a call is admitted; zero when one is now.
     def retry_after
       case @algorithm
       when :fixed_window
-        count = @storage.get_counter(@key, @period)
-        if count >= @limit
-          # Return the actual time remaining in the current window
-          @storage.get_counter_ttl(@key, @period)
-        else
-          0
-        end
-      when :gcra
-        result = @storage.peek_gcra_limit(
-          @key,
-          @period.to_f / @limit,
-          0
-        )
-        result[:retry_after]
-      when :token_bucket
-        result = @storage.peek_token_bucket(
-          @key,
-          @limit,
-          @limit.to_f / @period
-        )
-        result[:retry_after]
-      else
-        0
+        @storage.get_counter(@key, @period) >= @limit ? @storage.get_counter_ttl(@key, @period) : 0
+      when :gcra then @storage.gcra_retry_after(@key, @policy)
+      when :token_bucket then @storage.token_bucket_retry_after(@key, @policy)
       end
     end
 
     def to_h
-      {
-        key: @key,
-        limit: @limit,
-        period: @period,
-        algorithm: @algorithm,
-        remaining: remaining,
-        retry_after: retry_after
-      }
+      { key: @key, limit: @limit, period: @period, algorithm: @algorithm, remaining: remaining,
+        retry_after: retry_after }
     end
 
     private
 
-    def validate_rate!
-      raise ArgumentError, "limit must be positive, got #{@limit.inspect}" unless @limit.is_a?(Numeric) && @limit.positive?
-      raise ArgumentError, "period must be positive, got #{@period.inspect}" unless @period.is_a?(Numeric) && @period.positive?
+    # Integer calls left after this admission, or a refusal Symbol.
+    def check
+      case @algorithm
+      when :fixed_window
+        count = @storage.increment_counter(@key, @period)
+        count <= @limit ? @limit - count : :throttled
+      when :gcra then @storage.check_gcra(@key, @policy, @period * 2)
+      when :token_bucket then @storage.check_token_bucket(@key, @policy, @period * 2)
+      end
+    end
+
+    # Integer calls admitted now, at least one, or a refusal Symbol.
+    def peek
+      case @algorithm
+      when :fixed_window
+        count = @storage.get_counter(@key, @period)
+        count < @limit ? @limit - count : :throttled
+      when :gcra then @storage.peek_gcra(@key, @policy)
+      when :token_bucket then @storage.peek_token_bucket(@key, @policy)
+      end
+    end
+
+    def build_policy
+      case @algorithm
+      when :fixed_window then FixedWindowPolicy.new(@period, @limit)
+      when :gcra then GcraPolicy.per(@period, @limit, 1)
+      when :token_bucket then TokenBucketPolicy.per(@period, @limit)
+      end
+    end
+
+    def positive(value, name)
+      raise TypeError, "#{name} must be an Integer, got #{value.inspect}" unless value.is_a?(Integer)
+      raise RangeError, "#{name} must be positive, got #{value}" unless value.positive?
+
+      value
     end
 
     def validate_algorithm!
-      unless Storage::Base::ALGORITHM_OPERATIONS.key?(@algorithm)
-        raise ArgumentError, "Unknown algorithm: #{@algorithm.inspect}"
-      end
+      raise RangeError, "Unknown algorithm: #{@algorithm.inspect}" unless ALGORITHMS.include?(@algorithm)
       return unless @storage.respond_to?(:supports?)
       return if @storage.supports?(@algorithm)
 
-      raise ArgumentError, "#{@storage.class} does not support the #{@algorithm.inspect} algorithm"
+      raise RangeError, "#{@storage.class} does not support the #{@algorithm.inspect} algorithm"
     end
   end
 end

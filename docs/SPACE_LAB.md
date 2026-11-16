@@ -4,6 +4,11 @@
 
 Welcome to the ThrottleMachines testing laboratory! Here we'll learn how to test your rate limiters, circuit breakers, and defensive systems without actually launching into the void.
 
+Every limiter reads one clock: `ThrottleMachines.monotonic_time`, Integer
+nanoseconds. Stub it and time stands still; advance it and periods elapse
+exactly, no `sleep` required. Circuit breakers keep their own clock: pass any
+callable answering Integer nanoseconds as `clock:`.
+
 ---
 
 ## 🧪 Basic Test Equipment
@@ -14,15 +19,16 @@ Welcome to the ThrottleMachines testing laboratory! Here we'll learn how to test
 require 'throttle_machines'
 require 'minitest/autorun'  # or 'rspec'
 
+NS = ThrottleMachines::NS_PER_SECOND # 1_000_000_000
+
 class ThrottleTest < Minitest::Test
   def setup
     # Reset the universe before each test
     ThrottleMachines.reset!
+    BreakerMachines.registry.clear # shared circuits (break_circuit, fail2ban)
 
-    # Use memory storage for speed
-    ThrottleMachines.configure do |config|
-      config.storage = ThrottleMachines::Storage::Memory.new
-    end
+    # Use memory storage for speed (no sweeper thread in tests)
+    ThrottleMachines.storage = ThrottleMachines::Storage::Memory.new(auto_cleanup: false)
 
     # Freeze time for predictable tests
     @time_machine = TimeMachine.new
@@ -30,6 +36,15 @@ class ThrottleTest < Minitest::Test
 
   def teardown
     @time_machine.return_to_present
+  end
+
+  # Consume one call: true when admitted, false when throttled.
+  # (`allow?` only peeks; it never consumes.)
+  def fire(limiter)
+    limiter.throttle!
+    true
+  rescue ThrottleMachines::ThrottledError
+    false
   end
 end
 ```
@@ -43,32 +58,32 @@ end
 class PhotonTorpedoTest < ThrottleTest
   def test_basic_rate_limiting
     # Create a torpedo launcher with 3 shots
-    launcher = ThrottleMachines.limiter("torpedoes", limit: 3, period: 10)
+    launcher = ThrottleMachines.limiter("torpedoes", limit: 3, period: 10 * NS)
 
     # Fire all torpedoes
     3.times do |i|
-      assert launcher.allowed?, "Shot #{i+1} should be allowed"
+      assert fire(launcher), "Shot #{i+1} should be allowed"
     end
 
     # Fourth shot should fail
-    refute launcher.allowed?, "Fourth shot should be blocked"
+    refute fire(launcher), "Fourth shot should be blocked"
 
-    # Check retry timing
-    assert_in_delta 10, launcher.retry_after, 0.1
+    # Check retry timing: time is frozen, so it is exact
+    assert_equal 10 * NS, launcher.retry_after
   end
 
   def test_rate_limit_reset
-    launcher = ThrottleMachines.limiter("torpedoes", limit: 2, period: 5)
+    launcher = ThrottleMachines.limiter("torpedoes", limit: 2, period: 5 * NS)
 
     # Use up all shots
-    2.times { launcher.allowed? }
-    refute launcher.allowed?
+    2.times { fire(launcher) }
+    refute launcher.allow?
 
     # Travel through time
-    @time_machine.advance(5.seconds)
+    @time_machine.advance(5 * NS)
 
     # Torpedoes recharged!
-    assert launcher.allowed?, "Should reset after period"
+    assert launcher.allow?, "Should reset after period"
   end
 end
 ```
@@ -79,63 +94,64 @@ class AlgorithmComparisonTest < ThrottleTest
   def test_fixed_window_hard_reset
     limiter = ThrottleMachines.limiter("fixed_test",
       limit: 100,
-      period: 60,
+      period: 60 * NS,
       algorithm: :fixed_window
     )
 
     # Use 99 requests
-    99.times { limiter.allowed? }
-    assert limiter.allowed?  # 100th request
-    refute limiter.allowed?  # 101st blocked
+    99.times { fire(limiter) }
+    assert fire(limiter)  # 100th request
+    refute fire(limiter)  # 101st blocked
 
     # Jump to just before window end
-    @time_machine.advance(59.seconds)
-    refute limiter.allowed?  # Still blocked
+    @time_machine.advance(59 * NS)
+    refute fire(limiter)  # Still blocked
 
-    # Window resets exactly at boundary
-    @time_machine.advance(1.second)
-    assert limiter.allowed?  # Fresh window!
+    # Window resets exactly at boundary (60 s after its first request)
+    @time_machine.advance(1 * NS)
+    assert fire(limiter)  # Fresh window!
   end
 
   def test_token_bucket_regeneration
     bucket = ThrottleMachines.limiter("token_test",
-      limit: 10,      # 10 tokens max
-      period: 10,     # Refill in 10 seconds
+      limit: 10,          # 10 tokens max
+      period: 10 * NS,    # Refill in 10 seconds (one token per second)
       algorithm: :token_bucket
     )
 
     # Empty the bucket
-    10.times { bucket.allowed? }
-    refute bucket.allowed?
+    10.times { fire(bucket) }
+    refute fire(bucket)
 
     # Wait for partial refill
-    @time_machine.advance(5.seconds)
+    @time_machine.advance(5 * NS)
 
-    # Should have ~5 tokens now
+    # Exactly 5 tokens now
     5.times do |i|
-      assert bucket.allowed?, "Token #{i+1} should be available"
+      assert fire(bucket), "Token #{i+1} should be available"
     end
-    refute bucket.allowed?, "Bucket should be empty again"
+    refute fire(bucket), "Bucket should be empty again"
   end
 
   def test_gcra_smooth_distribution
     gcra = ThrottleMachines.limiter("gcra_test",
       limit: 60,
-      period: 60,
+      period: 60 * NS,
       algorithm: :gcra
     )
 
     # GCRA prevents bursts and distributes evenly
-    # Each request should be spaced ~1 second apart
+    # Each request is spaced exactly 1 second apart
 
-    assert gcra.allowed?  # First is free
+    assert fire(gcra)  # First is free
 
     # Second request immediately should fail
-    refute gcra.allowed?, "GCRA prevents immediate burst"
+    refute fire(gcra), "GCRA prevents immediate burst"
+    assert_equal 1 * NS, gcra.retry_after
 
     # But after 1 second, should allow
-    @time_machine.advance(1.second)
-    assert gcra.allowed?
+    @time_machine.advance(1 * NS)
+    assert fire(gcra)
   end
 end
 ```
@@ -144,76 +160,78 @@ end
 
 ## 🛡️ Testing Circuit Breakers
 
+Circuits are `BreakerMachines::Circuit`s. They don't read
+`ThrottleMachines.monotonic_time`; hand them the time machine as `clock:`.
+
 ### Basic Shield Testing
 ```ruby
 class ShieldSystemTest < ThrottleTest
   def setup
     super
-    @shields = ThrottleMachines::Breaker.new("test_shields",
-      failure_threshold: 3,
-      reset_timeout: 10,
-      storage: ThrottleMachines.configuration.storage
+    # Open on 3 failures within 60 s, stay open 10 s, one good probe closes
+    @shields = BreakerMachines::Circuit.new("test_shields",
+      ThrottleMachines::Breakers.policy(3, 60 * NS, 10 * NS),
+      clock: -> { @time_machine.now }
     )
   end
 
   def test_shield_activation
     # Normal operation
-    assert_nothing_raised do
-      @shields.run { "Success" }
-    end
+    assert_equal "Success", @shields.call { "Success" }
 
     # Simulate 3 failures
     3.times do |i|
       assert_raises(RuntimeError) do
-        @shields.run { raise "System failure #{i+1}" }
+        @shields.call { raise "System failure #{i+1}" }
       end
     end
 
     # Shields should now be UP
+    assert @shields.open?
     assert_raises(ThrottleMachines::CircuitOpenError) do
-      @shields.run { "This won't execute" }
+      @shields.call { "This won't execute" }
     end
   end
 
   def test_shield_recovery
     # Trigger shield activation
     3.times do
-      @shields.run { raise "Failure" } rescue nil
+      @shields.call { raise "Failure" } rescue nil
     end
 
-    # Shields are up
+    # Shields are up, for exactly the cooldown
     assert_raises(ThrottleMachines::CircuitOpenError) do
-      @shields.run { "Blocked" }
+      @shields.call { "Blocked" }
     end
+    assert_equal 10 * NS, @shields.retry_after
 
     # Wait for cooldown
-    @time_machine.advance(10.seconds)
+    @time_machine.advance(10 * NS)
 
-    # Shields should attempt recovery (half-open)
-    assert_equal "Success", @shields.run { "Success" }
+    # Shields attempt recovery (half-open probe)
+    assert_equal "Success", @shields.call { "Success" }
 
     # Shields fully lowered after success
-    assert_equal "Normal operation", @shields.run { "Normal operation" }
+    assert @shields.closed?
+    assert_equal "Normal operation", @shields.call { "Normal operation" }
   end
 
   def test_shield_reactivation
     # Activate shields
-    3.times { @shields.run { raise "Error" } rescue nil }
+    3.times { @shields.call { raise "Error" } rescue nil }
 
     # Wait for recovery
-    @time_machine.advance(10.seconds)
+    @time_machine.advance(10 * NS)
 
-    # First call succeeds (half-open -> closed)
-    @shields.run { "Success" }
-
-    # But if we fail again...
+    # The half-open probe fails...
     assert_raises(RuntimeError) do
-      @shields.run { raise "Another failure!" }
+      @shields.call { raise "Another failure!" }
     end
 
     # Shields immediately go back up (half-open -> open)
+    assert @shields.open?
     assert_raises(ThrottleMachines::CircuitOpenError) do
-      @shields.run { "Blocked again" }
+      @shields.call { "Blocked again" }
     end
   end
 end
@@ -221,12 +239,22 @@ end
 
 ### Advanced Shield Patterns
 ```ruby
+# Falls back to the secondary shield while the primary is up
+CascadingDefense = Data.define(:primary, :secondary) do
+  def execute(&block)
+    primary.call(&block)
+  rescue ThrottleMachines::CircuitOpenError
+    secondary.call(&block)
+  end
+end
+
 class AdvancedShieldTest < ThrottleTest
   def test_cascading_shields
-    primary = ThrottleMachines::Breaker.new("primary",
-      failure_threshold: 5, reset_timeout: 10)
-    secondary = ThrottleMachines::Breaker.new("secondary",
-      failure_threshold: 3, reset_timeout: 20)
+    clock = -> { @time_machine.now }
+    primary = BreakerMachines::Circuit.new("primary",
+      ThrottleMachines::Breakers.policy(5, 60 * NS, 10 * NS), clock: clock)
+    secondary = BreakerMachines::Circuit.new("secondary",
+      ThrottleMachines::Breakers.policy(3, 60 * NS, 20 * NS), clock: clock)
 
     defense_system = CascadingDefense.new(primary, secondary)
 
@@ -334,10 +362,11 @@ class RackMiddlewareTest < Minitest::Test
 
   def setup
     ThrottleMachines.reset!
+    ThrottleMachines::RackMiddleware.clear!  # drop rules from earlier tests
 
     # Configure middleware for testing
     ThrottleMachines::RackMiddleware.configure do |config|
-      config.throttle("test_limit", limit: 3, period: 60) do |req|
+      config.throttle("test_limit", limit: 3, period: 60 * NS) do |req|
         req.ip
       end
 
@@ -355,7 +384,7 @@ class RackMiddlewareTest < Minitest::Test
     # 4th request throttled
     get "/"
     assert_equal 429, last_response.status
-    assert last_response.headers["Retry-After"]
+    assert_equal "60", last_response.headers["retry-after"]  # whole seconds, rounded up
   end
 
   def test_blocklist
@@ -376,60 +405,62 @@ end
 
 ### Time Travel Helper
 ```ruby
+# Stands in for ThrottleMachines.monotonic_time: Integer nanoseconds that move
+# only when a test moves them. (The gem's own suite does the same in
+# test/support/test_clock.rb.)
 class TimeMachine
-  def initialize
-    @original_now = Time.method(:now)
-    @current_time = Time.now
+  attr_reader :now
 
-    # Monkey patch Time.now for testing
-    Time.define_singleton_method(:now) { @current_time }
-    Time.define_singleton_method(:current) { @current_time }
+  def initialize(start = 1_000 * ThrottleMachines::NS_PER_SECOND)
+    @now = start
+    @original = ThrottleMachines.method(:monotonic_time)
+    machine = self
+    ThrottleMachines.singleton_class.define_method(:monotonic_time) { machine.now }
   end
 
-  def advance(duration)
-    @current_time += duration
+  def advance(nanoseconds)
+    @now += nanoseconds
   end
 
-  def rewind(duration)
-    @current_time -= duration
-  end
-
-  def freeze
-    # Time already frozen at @current_time
+  def travel_to(nanoseconds)
+    @now = nanoseconds
   end
 
   def return_to_present
-    # Restore original Time.now
-    Time.define_singleton_method(:now, &@original_now)
-    Time.singleton_class.remove_method(:current) if Time.respond_to?(:current)
+    ThrottleMachines.singleton_class.define_method(:monotonic_time, @original)
   end
 end
 ```
 
+Memory and Redis storage read this clock. `Storage::Cache` aligns its windows
+to the wall clock (`Time.now`), so the time machine does not move it.
+
 ### Custom Assertions
 ```ruby
 module ThrottleAssertions
+  # Peeks only: these never consume a call
   def assert_throttled(limiter, message = nil)
-    refute limiter.allowed?, message || "Expected to be throttled"
+    refute limiter.allow?, message || "Expected to be throttled"
   end
 
   def assert_not_throttled(limiter, message = nil)
-    assert limiter.allowed?, message || "Expected not to be throttled"
+    assert limiter.allow?, message || "Expected not to be throttled"
   end
 
+  # min and max are Integer nanoseconds
   def assert_retry_after_between(limiter, min, max, message = nil)
     retry_after = limiter.retry_after
-    assert retry_after >= min && retry_after <= max,
-      message || "Expected retry_after between #{min} and #{max}, got #{retry_after}"
+    assert retry_after.between?(min, max),
+      message || "Expected retry_after between #{min} and #{max} ns, got #{retry_after} ns"
   end
 
   def assert_circuit_open(breaker, message = nil)
-    assert_equal :open, breaker.status_name,
+    assert_equal :open, breaker.state,
       message || "Expected circuit to be open"
   end
 
   def assert_circuit_closed(breaker, message = nil)
-    assert_equal :closed, breaker.status_name,
+    assert_equal :closed, breaker.state,
       message || "Expected circuit to be closed"
   end
 end
@@ -446,17 +477,19 @@ end
 
 ### Benchmarking Different Algorithms
 ```ruby
-require 'benchmark'
-
 class PerformanceLab < ThrottleTest
+  def setup
+    super
+    @time_machine.return_to_present  # benchmarks need the real clock
+  end
+
   def test_algorithm_performance
     iterations = 10_000
 
     algorithms = {
       fixed_window: :fixed_window,
       token_bucket: :token_bucket,
-      gcra: :gcra,
-      sliding_window: :sliding_window
+      gcra: :gcra
     }
 
     results = {}
@@ -464,22 +497,22 @@ class PerformanceLab < ThrottleTest
     algorithms.each do |name, algorithm|
       limiter = ThrottleMachines.limiter("perf_#{name}",
         limit: 1000,
-        period: 60,
+        period: 60 * NS,
         algorithm: algorithm
       )
 
       # Warm up
-      100.times { limiter.allowed? }
+      100.times { limiter.allow? }
 
-      # Benchmark
-      time = Benchmark.realtime do
-        iterations.times { limiter.allowed? }
-      end
+      # Benchmark, in Integer nanoseconds
+      started = ThrottleMachines.monotonic_time
+      iterations.times { limiter.allow? }
+      elapsed = ThrottleMachines.monotonic_time - started
 
       results[name] = {
-        total_time: time,
-        ops_per_second: (iterations / time).round,
-        time_per_op_us: ((time / iterations) * 1_000_000).round(2)
+        total_time_ns: elapsed,
+        ops_per_second: iterations * NS / elapsed,
+        time_per_op_ns: elapsed / iterations
       }
     end
 
@@ -489,7 +522,7 @@ class PerformanceLab < ThrottleTest
     results.each do |name, metrics|
       puts "#{name}:"
       puts "  Ops/second: #{metrics[:ops_per_second]}"
-      puts "  Time/op: #{metrics[:time_per_op_us]}μs"
+      puts "  Time/op: #{metrics[:time_per_op_ns]}ns"
     end
 
     # Assert reasonable performance
@@ -505,9 +538,10 @@ end
 ```ruby
 class LoadTest < ThrottleTest
   def test_concurrent_access
+    # Frozen clock: no time passes, so exactly one GCRA slot exists
     limiter = ThrottleMachines.limiter("concurrent_test",
       limit: 1000,
-      period: 1,
+      period: 1 * NS,
       algorithm: :gcra
     )
 
@@ -518,12 +552,11 @@ class LoadTest < ThrottleTest
     threads = 10.times.map do |i|
       Thread.new do
         100.times do
-          if limiter.allowed?
+          if fire(limiter)
             success_count.increment
           else
             blocked_count.increment
           end
-          sleep 0.001  # Small delay
         end
       end
     end
@@ -532,8 +565,8 @@ class LoadTest < ThrottleTest
 
     total = success_count.value + blocked_count.value
     assert_equal 1000, total, "Should process all requests"
-    assert_operator success_count.value, :<=, 1000,
-      "Should not exceed limit"
+    assert_equal 1, success_count.value,
+      "Ten threads, one instant, one admission"
   end
 end
 ```
@@ -544,11 +577,11 @@ end
 
 ### 1. Isolate Time-Dependent Tests
 ```ruby
-def with_frozen_time(time = Time.now)
-  time_machine = TimeMachine.new
+def with_frozen_time(start = 1_000 * NS)
+  time_machine = TimeMachine.new(start)
   yield(time_machine)
 ensure
-  time_machine.return_to_present
+  time_machine&.return_to_present
 end
 
 # Usage
@@ -557,8 +590,8 @@ def test_time_sensitive_operation
     limiter = create_limiter
     use_up_limit(limiter)
 
-    time_machine.advance(30.seconds)
-    assert limiter.allowed?
+    time_machine.advance(30 * NS)
+    assert limiter.allow?
   end
 end
 ```
@@ -566,48 +599,61 @@ end
 ### 2. Test Edge Cases
 ```ruby
 def test_edge_cases
-  # Zero limit
-  zero_limiter = ThrottleMachines.limiter("zero", limit: 0, period: 60)
-  refute zero_limiter.allowed?
+  # Zero limit: refused at construction
+  assert_raises(RangeError) do
+    ThrottleMachines.limiter("zero", limit: 0, period: 60 * NS)
+  end
+
+  # Float seconds: refused at construction
+  assert_raises(TypeError) do
+    ThrottleMachines.limiter("float", limit: 1, period: 0.001)
+  end
 
   # Massive limit
   huge_limiter = ThrottleMachines.limiter("huge",
-    limit: 1_000_000, period: 1)
-  assert huge_limiter.allowed?
+    limit: 1_000_000, period: 1 * NS)
+  assert huge_limiter.allow?
 
-  # Tiny period
+  # Tiny period: one millisecond
   fast_limiter = ThrottleMachines.limiter("fast",
-    limit: 1, period: 0.001)
-  assert fast_limiter.allowed?
+    limit: 1, period: 1_000_000)
+  assert fast_limiter.allow?
 end
 ```
 
 ### 3. Test Failure Scenarios
 ```ruby
+StorageOutage = Class.new(StandardError)
+
+# Memory storage that loses its link after `fail_after` counts
+class FailingStorage < ThrottleMachines::Storage::Memory
+  attr_accessor :fail_after
+
+  def increment_counter(...)
+    raise StorageOutage, "Redis went dark" if (self.fail_after -= 1).negative?
+
+    super
+  end
+end
+
 def test_storage_failure_handling
   # Simulate Redis failure
-  failing_storage = MockStorage.new(fail_after: 5)
+  failing_storage = FailingStorage.new(auto_cleanup: false)
+  failing_storage.fail_after = 5
 
-  limiter = ThrottleMachines.limiter("failsafe",
+  # ThrottleMachines.limiter uses the global storage; build one directly
+  limiter = ThrottleMachines::Limiter.new("failsafe",
     limit: 10,
-    period: 60,
+    period: 60 * NS,
+    algorithm: :fixed_window,
     storage: failing_storage
   )
 
-  # Should handle storage failures gracefully
-  10.times do |i|
-    if i < 5
-      assert limiter.allowed?
-    else
-      # After storage fails, might fail open or closed
-      # depending on your implementation
-      begin
-        limiter.allowed?
-      rescue => e
-        assert_kind_of ThrottleMachines::StorageError, e
-      end
-    end
-  end
+  5.times { assert fire(limiter) }
+
+  # The limiter does not swallow storage errors: whether to fail open or
+  # closed is your call (Storage::Cache offers `fail_closed:`)
+  assert_raises(StorageOutage) { limiter.throttle! }
 end
 ```
 

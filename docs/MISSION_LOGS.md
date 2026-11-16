@@ -14,7 +14,7 @@ On July 1, 2023, the Twitter space station implemented emergency rationing that 
 ### What Happened
 Captain Musk ordered immediate implementation of reading limits:
 - **Verified Ships**: 6,000 transmissions per day
-- **Standard Ships**: 600 transmissions per day  
+- **Standard Ships**: 600 transmissions per day
 - **New Arrivals**: 300 transmissions per day
 
 The limits were hastily adjusted multiple times throughout the day (8,000 → 10,000 for verified), causing confusion across the fleet.
@@ -132,20 +132,16 @@ end
 
 # The Correct Pattern:
 class SmartClient
+  NS = ThrottleMachines::NS_PER_SECOND # every span is Integer nanoseconds
+
+  # Exponential backoff with jitter: 1s, 2s, 4s... capped at 5 minutes,
+  # each delay with up to 10% shaved off at random
+  BACKOFF = ChronoMachines::Exponential.new(1 * NS, 2.0, 300 * NS, 0.1)
+
   def make_request
-    retries = 0
-    begin
+    # 5 attempts, then ThrottleMachines::RetryExhaustedError
+    ThrottleMachines.retry_with(BACKOFF, 5, retryable: [RateLimitError]) do
       api.call
-    rescue RateLimitError => e
-      retries += 1
-
-      # Exponential backoff with jitter
-      backoff = [2 ** retries, 300].min  # Cap at 5 minutes
-      jitter = rand(0..backoff * 0.1)    # Add 0-10% jitter
-
-      sleep(backoff + jitter)
-      retry if retries < 5
-      raise
     end
   end
 end
@@ -188,12 +184,13 @@ Based on these mission logs, here are essential defense protocols:
 ### 1. The Prime Directive
 ```ruby
 # ALWAYS implement exponential backoff with jitter
-ThrottleMachines.configure do |config|
-  config.retry_strategy = :exponential_backoff_with_jitter
-  config.max_retries = 5
-  config.base_delay = 1
-  config.max_delay = 300
-  config.jitter_factor = 0.1
+NS = ThrottleMachines::NS_PER_SECOND # 1_000_000_000
+
+# base 1s, x2 per attempt, capped at 300s, up to 10% jitter
+BACKOFF = ChronoMachines::Exponential.new(1 * NS, 2.0, 300 * NS, 0.1)
+
+ThrottleMachines.retry_with(BACKOFF, 5) do # 5 attempts
+  call_the_mothership
 end
 ```
 
@@ -202,15 +199,15 @@ end
 # Rate limit your own clients to prevent self-DDoS
 client_limiter = ThrottleMachines.limiter("client_requests",
   limit: 10,
-  period: 1,
+  period: 1 * NS,
   algorithm: :token_bucket  # Smooth out bursts
 )
 
 # Use it in your client code
-if client_limiter.allowed?
-  make_api_call
-else
-  schedule_for_later
+begin
+  client_limiter.throttle! { make_api_call }
+rescue ThrottleMachines::ThrottledError => e
+  schedule_for_later(e.retry_after) # Integer nanoseconds
 end
 ```
 
@@ -238,13 +235,11 @@ end
 
 ### 4. The Emergency Kill Switch
 ```ruby
-# Always have a way to disable rate limiting in emergencies
-ThrottleMachines::RackMiddleware.configure do |config|
-  config.enabled = -> {
-    # Check Redis for emergency override
-    !Redis.current.get("rate_limiting:emergency_disable")
-  }
-end
+# Always have a way to disable rate limiting in emergencies.
+# `enabled` is a plain boolean read on every request: flip it from
+# whatever watches your emergency override (ops console, config reload, ...)
+ThrottleMachines::RackMiddleware.enabled =
+  !redis.get("rate_limiting:emergency_disable")
 ```
 
 ---

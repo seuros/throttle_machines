@@ -28,7 +28,9 @@ module ThrottleMachines
                      :throttles,
                      :tracks,
                      :safelists,
-                     :blocklists
+                     :blocklists,
+                     :fail2bans,
+                     :allow2bans
 
       def configure(&block)
         @configuration ||= Configuration.new

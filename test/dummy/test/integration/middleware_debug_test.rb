@@ -11,33 +11,25 @@ class MiddlewareDebugTest < ActionDispatch::IntegrationTest
     ThrottleMachines::RackMiddleware.enabled = true
 
     # Configure a simple throttle
-    ThrottleMachines::RackMiddleware.throttle('test', limit: 2, period: 60) do |req|
+    ThrottleMachines::RackMiddleware.throttle('test', limit: 2, period: 60 * ThrottleMachines::NS_PER_SECOND) do |req|
       "test:#{req.ip}"
     end
   end
 
   test 'debug middleware execution' do
-    # First request
     get '/health'
-    puts "Response 1: #{response.status}"
-    puts "Headers 1: #{response.headers.select { |k, _v| k.start_with?('X-') || k == 'Retry-After' }}"
+    assert_response :success
+    assert_kind_of ThrottleMachines::Storage::Memory, ThrottleMachines.storage
 
-    # Check storage
-    storage = ThrottleMachines.configuration.storage
-    puts "Storage class: #{storage.class}"
-    puts "Storage contents after 1st request: #{storage.inspect}"
-
-    # Second request
     get '/health'
-    puts "Response 2: #{response.status}"
+    assert_response :success
 
-    # Third request should be rate limited
+    # The third request from the same IP is over the limit of two.
     get '/health'
-    puts "Response 3: #{response.status}"
-    puts "Headers 3: #{response.headers.select { |k, _v| k.start_with?('X-') || k == 'Retry-After' }}"
+    assert_response :too_many_requests
 
-    # Try with a different key
+    # A different IP has its own budget.
     get '/health', headers: { 'REMOTE_ADDR' => '1.2.3.4' }
-    puts "Response 4 (different IP): #{response.status}"
+    assert_response :success
   end
 end

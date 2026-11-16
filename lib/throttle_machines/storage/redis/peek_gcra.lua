@@ -1,20 +1,20 @@
+-- GCRA peek, the native core's arithmetic in Integer nanoseconds, on the
+-- server's TIME (see gcra.lua for how instants are stored).
+-- ARGV: emission_interval, delay_tolerance.
+-- Reply: {1, calls admitted now, 0} or {0, 0, nanoseconds until admitted}.
 local key = KEYS[1]
-local emission_interval = tonumber(ARGV[1])
-local delay_tolerance = tonumber(ARGV[2])
-local now = tonumber(ARGV[3])
+local interval = tonumber(ARGV[1])
+local tolerance = tonumber(ARGV[2])
 
-local tat = redis.call('GET', key)
-if not tat then
-  tat = 0
-else
-  tat = tonumber(tat)
+local time = redis.call('TIME')
+local second = tonumber(time[1])
+local state = redis.call('HMGET', key, 'tat', 'epoch')
+local now = (second - (tonumber(state[2]) or second)) * 1000000000 + tonumber(time[2]) * 1000
+
+local tat = tonumber(state[1]) or 0
+local ahead = math.max(tat - now, 0)
+if ahead > tolerance then
+  return { 0, 0, string.format('%.0f', ahead - tolerance) }
 end
 
-tat = math.max(tat, now)
--- The TAT is a running sum of emission intervals, so an on-schedule arrival
--- can overshoot the tolerance by a few ulps; the slack scales with the clock.
-local slack = 2.220446049250313e-16 * 64 * math.max(math.abs(tat), 1)
-local allow = (tat - now) <= delay_tolerance + slack
-
--- Redis truncates Lua numbers in replies to integers; send the TAT as text.
-return { allow and 1 or 0, string.format('%.17g', tat) }
+return { 1, math.floor((tolerance + interval - ahead) / interval), 0 }

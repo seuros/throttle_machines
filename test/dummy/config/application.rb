@@ -26,9 +26,7 @@ module Dummy
 
     # Configure ThrottleMachines defaults for testing
     config.after_initialize do
-      ThrottleMachines.configure do |config|
-        config.storage = ThrottleMachines::Storage::Memory.new
-      end
+      ThrottleMachines.storage = ThrottleMachines::Storage::Memory.new
     end
 
     # Add the middleware

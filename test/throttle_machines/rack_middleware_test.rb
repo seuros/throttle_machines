@@ -15,7 +15,7 @@ module ThrottleMachines
       app = ->(_env) { [200, {}, ['OK']] }
 
       # Configure throttle
-      ThrottleMachines::RackMiddleware.throttle('req/ip', limit: 2, period: 60, &:ip)
+      ThrottleMachines::RackMiddleware.throttle('req/ip', limit: 2, period: 60 * NS, &:ip)
 
       middleware = ThrottleMachines::RackMiddleware.new(app)
 
@@ -30,7 +30,7 @@ module ThrottleMachines
       status, headers, body = middleware.call(env_for('/', 'REMOTE_ADDR' => '1.2.3.4'))
 
       assert_equal 429, status
-      assert headers['retry-after']
+      assert_equal '60', headers['retry-after'], 'whole seconds, rounded up'
       assert_equal ["Retry later\n"], body
     end
 
@@ -58,7 +58,7 @@ module ThrottleMachines
       app = ->(_env) { [200, {}, ['OK']] }
 
       # Configure throttle
-      ThrottleMachines::RackMiddleware.throttle('req/ip', limit: 1, period: 60, &:ip)
+      ThrottleMachines::RackMiddleware.throttle('req/ip', limit: 1, period: 60 * NS, &:ip)
 
       # Safelist specific IP
       ThrottleMachines::RackMiddleware.safelist_ip('1.2.3.4')
@@ -114,7 +114,7 @@ module ThrottleMachines
         [503, { 'content-type' => 'text/plain' }, ['Service Unavailable']]
       end
 
-      ThrottleMachines::RackMiddleware.throttle('req/ip', limit: 1, period: 60, &:ip)
+      ThrottleMachines::RackMiddleware.throttle('req/ip', limit: 1, period: 60 * NS, &:ip)
 
       middleware = ThrottleMachines::RackMiddleware.new(app)
 
@@ -134,7 +134,7 @@ module ThrottleMachines
       # Disable rack attack
       ThrottleMachines::RackMiddleware.enabled = false
 
-      ThrottleMachines::RackMiddleware.throttle('req/ip', limit: 1, period: 60, &:ip)
+      ThrottleMachines::RackMiddleware.throttle('req/ip', limit: 1, period: 60 * NS, &:ip)
 
       middleware = ThrottleMachines::RackMiddleware.new(app)
 
@@ -144,6 +144,21 @@ module ThrottleMachines
 
         assert_equal 200, status
       end
+    end
+
+    # The fail2ban and allow2ban filters are read back like the other rules,
+    # on the configuration and through the middleware class.
+    def test_ban_filters_are_readable
+      config = ThrottleMachines::RackMiddleware.configuration
+      jail = ThrottleMachines::RackMiddleware.fail2ban('login', maxretry: 3, findtime: 10 * NS, bantime: 60 * NS, &:ip)
+      pass = ThrottleMachines::RackMiddleware.allow2ban('api', maxretry: 9, &:ip)
+
+      assert_equal({ 'login' => jail }, config.fail2bans)
+      assert_equal({ 'api' => pass }, config.allow2bans)
+      assert_same config.fail2bans, ThrottleMachines::RackMiddleware.fail2bans
+      assert_same config.allow2bans, ThrottleMachines::RackMiddleware.allow2bans
+      assert_equal [3, 10 * NS, 60 * NS], [jail.maxretry, jail.findtime, jail.bantime]
+      assert_equal [9, 60 * NS, 300 * NS], [pass.maxretry, pass.findtime, pass.bantime]
     end
 
     private

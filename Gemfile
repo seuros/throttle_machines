@@ -5,12 +5,10 @@ source 'https://rubygems.org'
 # Specify your gem's dependencies in throttle_machines.gemspec.
 gemspec
 
-# Use a sibling checkout when there is one, so a change there is tested here
-# before it is published, and the published gem otherwise.
-%w[breaker_machines chrono_machines deadline_machines].each do |name|
-  sibling = File.expand_path("../#{name}", __dir__)
-  gem name, path: sibling if File.directory?(sibling)
-end
+# An untracked Gemfile.local may point sibling gems at local checkouts, to
+# test a change there before it is published. It is never committed.
+local = File.expand_path('Gemfile.local', __dir__)
+eval_gemfile local if File.exist?(local)
 
 # Rails version from environment variable (default to 8.1).
 # Set RAILS_VERSION=edge to test against rails/rails main.
@@ -32,8 +30,9 @@ else
   gem 'railties', "~> #{rails_version}.0"
 end
 gem 'rake'
+gem 'rake-compiler', '~> 1.3'
+gem 'rbs', '~> 3.0'
 
 platforms :mri do
   gem 'padded_cell', '~> 0.2' # Fork-per-test runner for `rake test` (CRuby only)
-  gem 'pg', '~> 1.5'
 end

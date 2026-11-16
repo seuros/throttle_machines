@@ -36,6 +36,13 @@ Imagine your spacecraft's shields:
 
 Circuit breakers work the same way with your services!
 
+ThrottleMachines does not build its own shield generators: its circuits are
+[BreakerMachines](https://github.com/seuros/breaker_machines) circuits.
+`ThrottleMachines::Breakers.policy(failures, window, cooldown)` shapes the
+`BreakerMachines::Policy` they run: open after `failures` within `window`, stay
+open exactly `cooldown` (no jitter), then close on one successful probe. Every
+span is **Integer nanoseconds**.
+
 ---
 
 ## 🛡️ Basic Shield Configuration
@@ -44,20 +51,34 @@ Circuit breakers work the same way with your services!
 ```ruby
 require 'throttle_machines'
 
+NS = ThrottleMachines::NS_PER_SECOND # 1_000_000_000
+
 # Create a basic shield system
-shields = ThrottleMachines::Breaker.new("warp_core_shields",
-  failure_threshold: 5,    # 5 hits before shields activate
-  reset_timeout: 300,      # Shields stay up for 5 minutes
-  storage: ThrottleMachines.configuration.storage
+shields = BreakerMachines::Circuit.new("warp_core_shields",
+  ThrottleMachines::Breakers.policy(
+    5,        # 5 hits before shields activate...
+    60 * NS,  # ...within one minute
+    300 * NS  # Shields stay up for 5 minutes
+  )
 )
 
 # Protected operation
 begin
-  shields.run do
+  shields.call do
     engage_warp_drive!  # Protected system
   end
 rescue ThrottleMachines::CircuitOpenError => e
-  puts "🛡️ Shields are UP! System protected. Retry in #{e.retry_after} seconds"
+  # retry_after is Integer nanoseconds (nil when the lone probe slot is busy)
+  puts "🛡️ Shields are UP! System protected. Retry in #{e.retry_after} ns"
+end
+```
+
+Need a shield exactly once, by name, shared across the whole ship? The registry
+keeps one per key:
+
+```ruby
+ThrottleMachines.break_circuit("warp_core_shields", failures: 5, within: 60 * NS, timeout: 300 * NS) do
+  engage_warp_drive!
 end
 ```
 
@@ -70,23 +91,22 @@ end
 class ExternalAPIShield
   def initialize(api_name)
     @api_name = api_name
-    @shields = ThrottleMachines::Breaker.new(
+    @shields = BreakerMachines::Circuit.new(
       "api_shield_#{api_name}",
-      failure_threshold: 3,    # 3 strikes
-      reset_timeout: 60,       # 1 minute cooldown
-      storage: ThrottleMachines.configuration.storage
+      ThrottleMachines::Breakers.policy(
+        3,        # 3 strikes
+        60 * NS,  # within a minute
+        60 * NS   # 1 minute cooldown
+      )
     )
   end
 
   def call_api(&block)
-    @shields.run do
+    @shields.call do
       response = yield
 
-      # Manual failure detection
-      if response.status >= 500
-        @shields.record_failure
-        raise "API returned #{response.status}"
-      end
+      # Manual failure detection: anything raised inside the block is a hit
+      raise "API returned #{response.status}" if response.status >= 500
 
       response
     end
@@ -96,7 +116,7 @@ class ExternalAPIShield
       cached: true,
       data: fetch_cached_response,
       shield_status: "active",
-      retry_after: e.retry_after
+      retry_after: e.retry_after # Integer ns
     }
   end
 
@@ -119,24 +139,22 @@ end
 ```ruby
 class DatabaseShield
   def initialize
-    @shields = ThrottleMachines::Breaker.new(
+    @shields = BreakerMachines::Circuit.new(
       "database_shields",
-      failure_threshold: 5,
-      reset_timeout: 30,  # Quick recovery for databases
-      storage: ThrottleMachines.configuration.storage
+      ThrottleMachines::Breakers.policy(5, 60 * NS, 30 * NS) # Quick recovery for databases
     )
   end
 
   def query(&block)
-    @shields.run do
+    @shields.call do
       # Set aggressive timeout for database queries
       ActiveRecord::Base.connection.execute("SET statement_timeout = '5s'")
       yield
     end
-  rescue ActiveRecord::StatementTimeout => e
-    @shields.record_failure
+  rescue ActiveRecord::StatementTimeout
+    # Already counted as a hit by the circuit; translate for the crew
     raise DatabaseOverloadError, "Query timeout - shields activated"
-  rescue ThrottleMachines::CircuitOpenError => e
+  rescue ThrottleMachines::CircuitOpenError
     # Use read replica or cache when primary is protected
     Rails.logger.warn "Database shields active - using read replica"
     ActiveRecord::Base.connected_to(role: :reading) do
@@ -145,10 +163,13 @@ class DatabaseShield
   end
 end
 
+# One shield generator for the whole ship: a new circuit per call never trips
+DATABASE_SHIELD = DatabaseShield.new
+
 # Usage in your application
 class UserService
   def self.find_user(id)
-    DatabaseShield.new.query do
+    DATABASE_SHIELD.query do
       User.find(id)
     end
   end
@@ -160,43 +181,43 @@ end
 class CascadingDefenseSystem
   def initialize
     # Multiple shield layers with different sensitivities
-    @primary_shield = ThrottleMachines::Breaker.new(
+    @primary_shield = BreakerMachines::Circuit.new(
       "primary_shield",
-      failure_threshold: 10,
-      reset_timeout: 60
+      ThrottleMachines::Breakers.policy(10, 60 * NS, 60 * NS)
     )
 
-    @secondary_shield = ThrottleMachines::Breaker.new(
+    @secondary_shield = BreakerMachines::Circuit.new(
       "secondary_shield",
-      failure_threshold: 5,
-      reset_timeout: 300  # Longer recovery time
+      ThrottleMachines::Breakers.policy(5, 60 * NS, 300 * NS), # Longer recovery time
+      timeout: 1 * NS # cooperative: the block checks DeadlineMachines
     )
 
-    @emergency_shield = ThrottleMachines::Breaker.new(
+    @emergency_shield = BreakerMachines::Circuit.new(
       "emergency_shield",
-      failure_threshold: 3,
-      reset_timeout: 600  # 10 minute lockdown
+      ThrottleMachines::Breakers.policy(3, 60 * NS, 600 * NS) # 10 minute lockdown
     )
   end
 
   def execute_critical_operation(&block)
-    # Try primary systems first
-    @primary_shield.run { return yield }
+    # Try primary systems first. Never `return` from inside the block:
+    # the circuit would abandon the call instead of recording the success.
+    @primary_shield.call(&block)
   rescue ThrottleMachines::CircuitOpenError
     # Primary shields up, try secondary systems
     begin
-      @secondary_shield.run { return degraded_operation(&block) }
+      @secondary_shield.call { degraded_operation(&block) }
     rescue ThrottleMachines::CircuitOpenError
       # Secondary shields up, emergency protocols
-      @emergency_shield.run { return emergency_fallback }
+      @emergency_shield.call { emergency_fallback }
     end
   end
 
   private
 
   def degraded_operation(&block)
-    # Run with reduced functionality
-    with_timeout(1) { yield }
+    # Run with reduced functionality, inside the secondary shield's 1 s budget
+    DeadlineMachines.check!
+    yield
   end
 
   def emergency_fallback
@@ -205,6 +226,9 @@ class CascadingDefenseSystem
   end
 end
 ```
+
+A circuit can also carry its own fallbacks: `fallback:` takes a Proc (called
+with the error), an Array of them tried in order, or a plain value.
 
 ---
 
@@ -222,11 +246,9 @@ class AdaptiveShield
     # Adjust shield sensitivity based on time of day
     threshold = calculate_dynamic_threshold
 
-    ThrottleMachines::Breaker.new(
+    BreakerMachines::Circuit.new(
       "adaptive_shield_#{@service_name}",
-      failure_threshold: threshold,
-      reset_timeout: calculate_recovery_time,
-      storage: ThrottleMachines.configuration.storage
+      ThrottleMachines::Breakers.policy(threshold, 60 * NS, calculate_recovery_time)
     )
   end
 
@@ -251,7 +273,7 @@ class AdaptiveShield
 
   def calculate_recovery_time
     # Longer recovery during peak hours
-    peak_hours? ? 300 : 60
+    peak_hours? ? 300 * NS : 60 * NS
   end
 
   def peak_hours?
@@ -263,14 +285,16 @@ end
 
 ### Shield Monitoring & Telemetry
 ```ruby
+MS = 1_000_000
+
 class ShieldTelemetry
   def self.monitor(shield_name, &block)
-    start_time = Time.current
+    start_time = ThrottleMachines.monotonic_time
     shield_state = :transparent
 
     begin
       result = yield
-      record_success(shield_name, Time.current - start_time)
+      record_success(shield_name, ThrottleMachines.monotonic_time - start_time)
       result
     rescue ThrottleMachines::CircuitOpenError => e
       shield_state = :active
@@ -281,20 +305,20 @@ class ShieldTelemetry
       record_failure(shield_name, e.class.name)
       raise
     ensure
-      emit_telemetry(shield_name, shield_state, Time.current - start_time)
+      emit_telemetry(shield_name, shield_state, ThrottleMachines.monotonic_time - start_time)
     end
   end
 
   private
 
   def self.record_success(shield_name, duration)
-    StatsD.timing("shields.#{shield_name}.success", duration)
+    StatsD.timing("shields.#{shield_name}.success", duration / MS) # StatsD speaks ms
     StatsD.increment("shields.#{shield_name}.requests.success")
   end
 
   def self.record_shield_activation(shield_name, retry_after)
     StatsD.increment("shields.#{shield_name}.activated")
-    StatsD.gauge("shields.#{shield_name}.retry_after", retry_after)
+    StatsD.gauge("shields.#{shield_name}.retry_after_ns", retry_after || 0)
 
     # Alert the crew!
     AlertSystem.notify(
@@ -313,7 +337,7 @@ class ShieldTelemetry
       event: "shield_telemetry",
       shield: shield_name,
       state: state,
-      duration_ms: (duration * 1000).round,
+      duration_ns: duration,
       timestamp: Time.current.iso8601
     }.to_json)
   end
@@ -323,13 +347,18 @@ end
 class MonitoredService
   def call_external_api
     ShieldTelemetry.monitor("external_api") do
-      @shields.run do
+      @shields.call do
         perform_api_call
       end
     end
   end
 end
 ```
+
+Circuits also publish their own transitions through ActiveSupport::Notifications:
+`breaker_machines.opened`, `breaker_machines.closed`,
+`breaker_machines.half_opened` and `breaker_machines.rejected`, each with
+`circuit:` in the payload.
 
 ---
 
@@ -342,16 +371,16 @@ class ShieldControl
     @breaker = breaker
   end
 
-  # Force shields up (emergency protocol)
+  # Force shields up (emergency protocol), restarting the cooldown
   def raise_shields!
-    @breaker.trip!
+    @breaker.force_open
     broadcast_alert("Shields manually raised by command")
   end
 
   # Attempt shield lowering (with safety check)
   def lower_shields!
     if safe_to_lower?
-      @breaker.reset!
+      @breaker.force_close # keeps the failure window; `reset` would clear it
       broadcast_alert("Shields lowered - systems normal")
     else
       broadcast_alert("Cannot lower shields - threats detected")
@@ -361,11 +390,12 @@ class ShieldControl
 
   # Shield status report
   def status
+    stats = @breaker.stats
     {
-      state: @breaker.status_name,
-      failures: @breaker.stats.failure_count,
-      last_failure: @breaker.last_failure_time,
-      auto_reset_at: @breaker.reset_at,
+      state: @breaker.state,
+      failures: stats.failure_count,
+      last_failure_at: stats.last_failure_at, # Integer ns on the circuit's clock
+      probe_in: @breaker.retry_after,         # Integer ns, nil unless open
       health: calculate_shield_health
     }
   end
@@ -374,14 +404,15 @@ class ShieldControl
 
   def safe_to_lower?
     # Check if it's safe to lower shields
-    recent_failures = @breaker.stats.failure_count
-    time_since_failure = Time.current - (@breaker.last_failure_time || 1.hour.ago)
+    stats = @breaker.stats
+    return true if stats.last_failure_at.nil?
 
-    recent_failures < 2 && time_since_failure > 5.minutes
+    time_since_failure = @breaker.now - stats.last_failure_at
+    stats.failure_count < 2 && time_since_failure > 5 * 60 * NS
   end
 
   def calculate_shield_health
-    case @breaker.status_name
+    case @breaker.state
     when :closed
       "100% - All systems operational"
     when :open
@@ -409,16 +440,18 @@ end
 ```ruby
 class PaymentShield
   def initialize
-    @shield = ThrottleMachines::Breaker.new(
+    @shield = BreakerMachines::Circuit.new(
       "payment_processor",
-      failure_threshold: 3,    # Very sensitive
-      reset_timeout: 1800,     # 30 minutes - payment systems need time
-      storage: ThrottleMachines.configuration.storage
+      ThrottleMachines::Breakers.policy(
+        3,         # Very sensitive
+        60 * NS,
+        1800 * NS  # 30 minutes - payment systems need time
+      )
     )
   end
 
   def process_payment(amount, customer)
-    @shield.run do
+    @shield.call do
       # Primary payment processor
       Stripe::Charge.create(
         amount: amount,
@@ -431,7 +464,7 @@ class PaymentShield
     PaymentQueue.enqueue(
       amount: amount,
       customer: customer,
-      retry_after: e.retry_after,
+      retry_after: e.retry_after, # Integer ns
       reason: "Primary processor shields active"
     )
 
@@ -448,33 +481,34 @@ end
 ```ruby
 class AIServiceShield
   def initialize
-    @shield = ThrottleMachines::Breaker.new(
+    @shield = BreakerMachines::Circuit.new(
       "ai_service",
-      failure_threshold: 5,
-      reset_timeout: 120,  # Quick recovery for AI services
-      storage: ThrottleMachines.configuration.storage
+      ThrottleMachines::Breakers.policy(5, 60 * NS, 120 * NS) # Quick recovery for AI services
     )
 
     # Also add rate limiting to prevent abuse
     @rate_limiter = ThrottleMachines.limiter(
       "ai_rate_limit",
       limit: 100,
-      period: 3600,
+      period: 3600 * NS,
       algorithm: :gcra
     )
   end
 
   def generate_response(prompt)
-    # Check rate limit first
-    unless @rate_limiter.allowed?
+    # Check (and consume) the rate limit first, outside the shield:
+    # a ThrottledError raised inside it would count as a hit
+    begin
+      @rate_limiter.throttle!
+    rescue ThrottleMachines::ThrottledError => e
       return {
         error: "Rate limit exceeded",
-        retry_after: @rate_limiter.retry_after
+        retry_after: e.retry_after # Integer ns
       }
     end
 
     # Then check shields
-    @shield.run do
+    @shield.call do
       response = OpenAI::Client.new.completions(
         model: "gpt-4",
         prompt: prompt,
@@ -504,49 +538,38 @@ end
 ```ruby
 class ShieldAnalytics
   def self.report(breaker_name)
-    breaker = ThrottleMachines.breakers[breaker_name]
+    breaker = BreakerMachines.registry.find(breaker_name)
+    return nil unless breaker
 
+    stats = breaker.stats
     {
-      current_state: breaker.status_name,
-      uptime_percentage: calculate_uptime(breaker),
-      failure_rate: calculate_failure_rate(breaker),
-      mttr: mean_time_to_recovery(breaker),
-      protection_events: protection_timeline(breaker)
+      current_state: breaker.state,
+      failure_rate: calculate_failure_rate(stats),
+      open_for: ThrottleMachines::Breakers.since(breaker), # Integer ns, nil unless open
+      probe_in: breaker.retry_after,                      # Integer ns, nil unless open
+      protection_events: protection_timeline(breaker),
+      summary: breaker.summary
     }
   end
 
   private
 
-  def self.calculate_uptime(breaker)
-    total_time = Time.current - breaker.created_at
-    open_time = breaker.time_in_open_state
-
-    ((total_time - open_time) / total_time * 100).round(2)
-  end
-
-  def self.calculate_failure_rate(breaker)
-    window = 1.hour.ago
-    recent_failures = breaker.failures_since(window)
-    total_calls = breaker.calls_since(window)
-
+  # Failure share of the outcomes still inside the circuit's window
+  def self.calculate_failure_rate(stats)
+    total_calls = stats.failure_count + stats.success_count
     return 0 if total_calls.zero?
-    (recent_failures.to_f / total_calls * 100).round(2)
+
+    (stats.failure_count.fdiv(total_calls) * 100).round(2)
   end
 
-  def self.mean_time_to_recovery(breaker)
-    recoveries = breaker.recovery_times
-    return 0 if recoveries.empty?
-
-    (recoveries.sum / recoveries.size).round
-  end
-
+  # The newest recorded outcomes, oldest first. For the transition history,
+  # subscribe to breaker_machines.opened / closed / half_opened instead.
   def self.protection_timeline(breaker)
-    breaker.state_changes.last(10).map do |change|
+    breaker.events(10).map do |event|
       {
-        timestamp: change.timestamp,
-        from_state: change.from,
-        to_state: change.to,
-        duration: change.duration
+        at: event.at,           # Integer ns on the circuit's clock
+        outcome: event.outcome, # :success or :failure
+        took: event.took        # Integer ns
       }
     end
   end

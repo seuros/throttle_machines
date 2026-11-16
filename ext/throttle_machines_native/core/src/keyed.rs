@@ -1,85 +1,137 @@
-//! Keyed GCRA: one TAT per key in a sharded map, on a monotonic clock.
+//! Keyed GCRA: one TAT per key in a sharded, mutex-guarded map.
 //!
-//! A TAT at or before `now` is equivalent to no entry (the client has fully
-//! recovered), which is what eviction relies on.
+//! A TAT at or before `now` is equivalent to no entry (the key has fully
+//! recovered), which is what eviction relies on. The caller supplies `now`,
+//! the same epoch for every call on one limiter; threads racing on one shard
+//! may present slightly out-of-order instants, which GCRA answers no more
+//! generously than in order.
 
-use std::borrow::Borrow;
+use std::borrow::{Borrow, ToOwned};
+use std::boxed::Box;
 use std::collections::HashMap;
 use std::hash::{BuildHasher, Hash, RandomState};
 use std::num::NonZeroUsize;
 use std::sync::{Mutex, MutexGuard, PoisonError};
-use std::time::Instant;
+use std::time::Duration;
+use std::vec::Vec;
 
-use crate::gate::{Decision, Gate};
-use crate::gcra::{Gcra, GcraParams};
+use crate::{Gate, Gcra, GcraPolicy, Refusal};
 
-const DEFAULT_SHARDS: NonZeroUsize = NonZeroUsize::new(16).expect("16 is non-zero");
+const DEFAULT_SHARDS: NonZeroUsize = NonZeroUsize::MIN.saturating_add(15);
+const DEFAULT_MAX_KEYS_PER_SHARD: NonZeroUsize = NonZeroUsize::MIN.saturating_add(4095);
 /// Start sweeping a shard of recovered keys at this many entries.
 const DEFAULT_EVICT_AT: usize = 4096;
-const DEFAULT_MAX_KEYS_PER_SHARD: usize = 4096;
 /// An automatic sweep waits until this fraction of the shard could have
 /// recovered, so each one reclaims a batch instead of rescanning for one key.
 const SWEEP_BATCH: usize = 8;
 
 #[derive(Debug)]
 struct Shard<K> {
-    tats: HashMap<K, f64>,
+    tats: HashMap<K, Duration>,
     // When the next automatic sweep may run; `None` runs it at once.
-    next_sweep: Option<f64>,
+    next_sweep: Option<Duration>,
 }
 
 impl<K> Shard<K> {
+    fn sweep_open(&self, now: Duration) -> bool {
+        self.next_sweep.is_none_or(|deadline| deadline <= now)
+    }
+
     /// Reclaim recovered keys, unless too few could have recovered yet.
-    fn sweep_due(&mut self, now: f64) {
-        if self.next_sweep.is_none_or(|deadline| deadline <= now) {
+    fn sweep_due(&mut self, now: Duration) {
+        if self.sweep_open(now) {
             self.sweep(now);
         }
     }
 
+    /// Whether [`sweep_due`](Self::sweep_due) at `now` would free a slot.
+    fn reclaimable(&self, now: Duration) -> bool {
+        self.sweep_open(now) && self.tats.values().any(|tat| *tat <= now)
+    }
+
     /// Reclaim every recovered key and schedule the next automatic sweep
     /// for when an eighth of those left could have recovered.
-    fn sweep(&mut self, now: f64) {
+    fn sweep(&mut self, now: Duration) {
         self.tats.retain(|_, tat| *tat > now);
-        let mut tats: Vec<f64> = self.tats.values().copied().collect();
+        let mut tats: Vec<Duration> = self.tats.values().copied().collect();
         self.next_sweep = (!tats.is_empty()).then(|| {
+            // 1 <= batch <= len for a non-empty set, so `batch - 1` is in bounds.
             let batch = (tats.len() / SWEEP_BATCH).max(1);
-            *tats.select_nth_unstable_by(batch - 1, f64::total_cmp).1
+            *tats.select_nth_unstable(batch - 1).1
         });
     }
 }
 
+/// What a key finds in its shard, for the queries.
+enum Seen {
+    /// The key is tracked at this TAT.
+    Tracked(Duration),
+    /// The key is untracked and `check` would refuse it as full; the shard's
+    /// next sweep, if one is scheduled.
+    Full(Option<Duration>),
+    /// The key is untracked and would be admitted from a fresh TAT.
+    Room,
+}
+
 /// A GCRA limiter that keeps per-key state itself.
 ///
-/// ```
-/// use throttle_machines::{GcraParams, KeyedGcra};
+/// Every key is limited by one [`GcraPolicy`]. A refused call leaves every
+/// key's TAT as it was; a [`Refusal::Full`] may still reschedule the shard's
+/// next sweep, which is bookkeeping, not limiter state.
 ///
-/// let limiter = KeyedGcra::<String>::new(GcraParams::from_rate(10.0, 3));
-/// assert!(limiter.check("alice").allowed);
+/// ```
+/// use core::num::NonZeroU64;
+/// use std::time::Duration;
+/// use throttle_machines::{GcraPolicy, KeyedGcra, Refusal};
+///
+/// let one = NonZeroU64::MIN;
+/// let policy = GcraPolicy::per(Duration::from_secs(1), one, one).unwrap();
+/// let limiter = KeyedGcra::<String>::new(policy);
+/// let now = Duration::from_secs(3);
+/// assert_eq!(limiter.check("alice", now), Ok(0));
+/// assert_eq!(limiter.check("alice", now), Err(Refusal::Throttled));
+/// assert_eq!(limiter.check("bob", now), Ok(0));
 /// ```
 #[derive(Debug)]
 pub struct KeyedGcra<K, S = RandomState> {
-    params: GcraParams,
+    policy: GcraPolicy,
     shards: Box<[Mutex<Shard<K>>]>,
     hasher: S,
-    epoch: Instant,
     evict_at: usize,
-    max_keys_per_shard: usize,
+    max_keys_per_shard: NonZeroUsize,
 }
 
 impl<K: Hash + Eq> KeyedGcra<K> {
-    /// A limiter with 16 shards and a randomly seeded hasher.
+    /// A limiter with 16 shards of up to 4096 keys and a randomly seeded
+    /// hasher.
     #[must_use]
-    pub fn new(params: GcraParams) -> Self {
-        Self::with_hasher(params, DEFAULT_SHARDS, RandomState::new())
+    pub fn new(policy: GcraPolicy) -> Self {
+        Self::with_hasher(
+            policy,
+            DEFAULT_SHARDS,
+            DEFAULT_MAX_KEYS_PER_SHARD,
+            RandomState::new(),
+        )
     }
 }
 
 impl<K: Hash + Eq, S: BuildHasher> KeyedGcra<K, S> {
-    /// A limiter with `shards` independently locked maps, hashed by `hasher`.
+    /// A limiter with `shards` independently locked maps of up to
+    /// `max_keys_per_shard` keys each, hashed by `hasher`.
+    ///
+    /// Recovered keys are reclaimed first, in batches: a full shard sweeps
+    /// once an eighth of it could have recovered, and refuses unknown keys
+    /// with [`Refusal::Full`] until then without allocating; tracked keys
+    /// keep their limits. Unused capacity in another shard is not borrowed.
     #[must_use]
-    pub fn with_hasher(params: GcraParams, shards: NonZeroUsize, hasher: S) -> Self {
+    pub fn with_hasher(
+        policy: GcraPolicy,
+        shards: NonZeroUsize,
+        max_keys_per_shard: NonZeroUsize,
+        hasher: S,
+    ) -> Self {
         Self {
-            params,
+            policy,
             shards: (0..shards.get())
                 .map(|_| {
                     Mutex::new(Shard {
@@ -89,14 +141,13 @@ impl<K: Hash + Eq, S: BuildHasher> KeyedGcra<K, S> {
                 })
                 .collect(),
             hasher,
-            epoch: Instant::now(),
             evict_at: DEFAULT_EVICT_AT,
-            max_keys_per_shard: DEFAULT_MAX_KEYS_PER_SHARD,
+            max_keys_per_shard,
         }
     }
 
-    /// Sweep recovered keys before checking a shard with at least `evict_at`
-    /// entries (default 4096). This is a cleanup trigger, not a storage cap.
+    /// Sweep recovered keys after an admission leaves a shard with at least
+    /// `evict_at` entries (default 4096). A cleanup trigger, not a cap.
     /// Sweeps are skipped until an eighth of the shard could have recovered.
     #[must_use]
     pub const fn evict_at(mut self, evict_at: usize) -> Self {
@@ -104,120 +155,93 @@ impl<K: Hash + Eq, S: BuildHasher> KeyedGcra<K, S> {
         self
     }
 
-    /// Cap each shard at `max_keys` entries (default 4096, 65536 total with
-    /// the default 16 shards). Zero rejects all new identities.
-    ///
-    /// Recovered keys are reclaimed first, in batches: a full shard sweeps
-    /// once an eighth of it could have recovered, and refuses unknown keys
-    /// until then without allocating; existing keys keep their rate limits.
-    /// Unused capacity in another shard is not borrowed.
-    ///
-    /// # Panics
-    ///
-    /// Panics if a shard already contains more than `max_keys` entries.
+    /// The policy every key is limited by.
     #[must_use]
-    pub fn max_keys_per_shard(mut self, max_keys: usize) -> Self {
-        assert!(
-            self.shards
-                .iter()
-                .all(|shard| lock(shard).tats.len() <= max_keys),
-            "max_keys cannot be smaller than an existing shard"
-        );
-        self.max_keys_per_shard = max_keys;
-        self
+    pub const fn policy(&self) -> GcraPolicy {
+        self.policy
     }
 
-    /// The parameters every key is limited by.
-    pub const fn params(&self) -> GcraParams {
-        self.params
-    }
-
-    /// Seconds since this limiter was created: the clock `check` and `peek` use.
-    pub fn now(&self) -> f64 {
-        self.epoch.elapsed().as_secs_f64()
-    }
-
-    /// Admit one request for `key` now. Refusals leave the key's state untouched.
-    pub fn check<Q>(&self, key: &Q) -> Decision<f64>
-    where
-        K: Borrow<Q>,
-        Q: Hash + Eq + ToOwned<Owned = K> + ?Sized,
-    {
-        self.check_at(key, self.now())
-    }
-
-    /// [`check`](Self::check) at an explicit time on this limiter's clock.
-    /// A full shard refuses unknown identities with state `0.0` and a retry
-    /// hint until the next possible recovery, without reserving a slot.
-    pub fn check_at<Q>(&self, key: &Q, now: f64) -> Decision<f64>
+    /// Admit one call for `key` at `now`. Honoured: how many more calls the
+    /// key would be admitted at the same instant.
+    ///
+    /// # Errors
+    ///
+    /// [`Refusal::Throttled`] when the key's limit is spent at `now`;
+    /// [`Refusal::Overflow`] when admitting would push its TAT past
+    /// `Duration::MAX`; [`Refusal::Full`] when the key is untracked and its
+    /// shard is full of keys that have not recovered.
+    pub fn check<Q>(&self, key: &Q, now: Duration) -> Result<u64, Refusal>
     where
         K: Borrow<Q>,
         Q: Hash + Eq + ToOwned<Owned = K> + ?Sized,
     {
         let mut shard = self.shard(key);
-        if shard.tats.len() >= self.evict_at || shard.tats.len() >= self.max_keys_per_shard {
-            shard.sweep_due(now);
-        }
-        let tat = shard.tats.get(key).copied().unwrap_or(0.0);
-        if !shard.tats.contains_key(key) && shard.tats.len() >= self.max_keys_per_shard {
-            return Self::capacity_refusal(&shard, now);
-        }
-        let decision = Gcra::check(tat, now, self.params);
-        if decision.allowed {
-            match shard.tats.get_mut(key) {
-                Some(tat) => *tat = decision.state,
-                None => {
-                    shard.tats.insert(key.to_owned(), decision.state);
+        let left = if let Some(tat) = shard.tats.get_mut(key) {
+            let mut gcra = Gcra::restored(self.policy, *tat);
+            let left = gcra.check(now)?;
+            *tat = gcra.tat();
+            left
+        } else {
+            if shard.tats.len() >= self.max_keys_per_shard.get() {
+                // Frees a slot exactly when a key has recovered; otherwise
+                // it only reschedules the next sweep.
+                shard.sweep_due(now);
+                if shard.tats.len() >= self.max_keys_per_shard.get() {
+                    return Err(Refusal::Full);
                 }
             }
-        }
-        decision
-    }
-
-    /// Whether `key` would be admitted now, without consuming. May reclaim
-    /// recovered keys when the shard is full.
-    pub fn peek<Q>(&self, key: &Q) -> Decision<f64>
-    where
-        K: Borrow<Q>,
-        Q: Hash + Eq + ?Sized,
-    {
-        self.peek_at(key, self.now())
-    }
-
-    /// [`peek`](Self::peek) at an explicit time on this limiter's clock.
-    pub fn peek_at<Q>(&self, key: &Q, now: f64) -> Decision<f64>
-    where
-        K: Borrow<Q>,
-        Q: Hash + Eq + ?Sized,
-    {
-        let mut shard = self.shard(key);
-        // Reclaiming recovered state does not consume rate-limit capacity.
-        if shard.tats.len() >= self.max_keys_per_shard {
+            let mut gcra = Gcra::new(self.policy);
+            let left = gcra.check(now)?;
+            shard.tats.insert(key.to_owned(), gcra.tat());
+            left
+        };
+        if shard.tats.len() >= self.evict_at {
             shard.sweep_due(now);
         }
-        let tat = shard.tats.get(key).copied().unwrap_or(0.0);
-        if !shard.tats.contains_key(key) && shard.tats.len() >= self.max_keys_per_shard {
-            return Self::capacity_refusal(&shard, now);
-        }
         drop(shard);
-        Gcra::peek(tat, now, self.params)
+        Ok(left)
     }
 
-    /// Give back one admission [`check`](Self::check) granted `key`, as if it
-    /// had been refused: for admitting a request only when every limiter it
-    /// spends admits it. Refunding an admission that was never granted grants
-    /// capacity that was never earned.
-    pub fn refund<Q>(&self, key: &Q)
+    /// How many calls [`check`](Self::check) would admit `key` at `now`, at
+    /// least one, without consuming or reclaiming anything.
+    ///
+    /// # Errors
+    ///
+    /// The refusal `check` would answer at `now`.
+    pub fn peek<Q>(&self, key: &Q, now: Duration) -> Result<u64, Refusal>
     where
         K: Borrow<Q>,
         Q: Hash + Eq + ?Sized,
     {
-        self.refund_at(key, self.now());
+        match self.seen(key, now) {
+            Seen::Tracked(tat) => Gcra::restored(self.policy, tat).peek(now),
+            Seen::Full(_) => Err(Refusal::Full),
+            Seen::Room => Gcra::new(self.policy).peek(now),
+        }
     }
 
-    /// [`refund`](Self::refund) at an explicit time on this limiter's clock.
-    /// A key left fully recovered is dropped, freeing its slot.
-    pub fn refund_at<Q>(&self, key: &Q, now: f64)
+    /// How long after `now` `key` is admitted: zero when it is admitted at
+    /// `now`. For an untracked key refused as full, the wait until its shard
+    /// next sweeps, a hint rather than a promise of a free slot.
+    pub fn retry_after<Q>(&self, key: &Q, now: Duration) -> Duration
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
+        match self.seen(key, now) {
+            Seen::Tracked(tat) => Gcra::restored(self.policy, tat).retry_after(now),
+            Seen::Full(next_sweep) => {
+                next_sweep.map_or(Duration::ZERO, |deadline| deadline.saturating_sub(now))
+            }
+            Seen::Room => Gcra::new(self.policy).retry_after(now),
+        }
+    }
+
+    /// Give back one admission [`check`](Self::check) granted `key`, as if
+    /// it had been refused: for admitting a call only when every limiter it
+    /// spends admits it. A key left fully recovered at `now` is dropped,
+    /// freeing its slot; an untracked key has nothing to give back.
+    pub fn refund<Q>(&self, key: &Q, now: Duration)
     where
         K: Borrow<Q>,
         Q: Hash + Eq + ?Sized,
@@ -226,25 +250,23 @@ impl<K: Hash + Eq, S: BuildHasher> KeyedGcra<K, S> {
         let Some(tat) = shard.tats.get_mut(key) else {
             return;
         };
-        *tat = Gcra::refund(*tat, self.params);
+        let mut gcra = Gcra::restored(self.policy, *tat);
+        gcra.refund();
+        *tat = gcra.tat();
         if *tat <= now {
             shard.tats.remove(key);
         }
     }
 
-    /// Drop every key that has fully recovered; returns how many were dropped.
-    pub fn evict(&self) -> usize {
-        self.evict_before(self.now())
-    }
-
-    /// [`evict`](Self::evict) at an explicit time on this limiter's clock.
-    pub fn evict_before(&self, now: f64) -> usize {
+    /// Drop every key that has fully recovered at `now`; answers how many.
+    pub fn evict(&self, now: Duration) -> usize {
         self.shards
             .iter()
             .map(|shard| {
                 let mut shard = lock(shard);
                 let before = shard.tats.len();
                 shard.sweep(now);
+                // A sweep only removes keys.
                 before - shard.tats.len()
             })
             .sum()
@@ -260,29 +282,41 @@ impl<K: Hash + Eq, S: BuildHasher> KeyedGcra<K, S> {
         self.shards.iter().all(|shard| lock(shard).tats.is_empty())
     }
 
-    fn capacity_refusal(shard: &Shard<K>, now: f64) -> Decision<f64> {
-        Decision {
-            allowed: false,
-            state: 0.0,
-            // This is a capacity retry hint, not a guarantee of a free slot.
-            retry_after: shard
-                .next_sweep
-                .map_or(1.0, |deadline| (deadline - now).max(0.0)),
-        }
+    /// What `key` finds in its shard at `now`, read under one short lock.
+    fn seen<Q>(&self, key: &Q, now: Duration) -> Seen
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
+        let shard = self.shard(key);
+        let seen = match shard.tats.get(key) {
+            Some(tat) => Seen::Tracked(*tat),
+            None if shard.tats.len() >= self.max_keys_per_shard.get()
+                && !shard.reclaimable(now) =>
+            {
+                Seen::Full(shard.next_sweep)
+            }
+            None => Seen::Room,
+        };
+        drop(shard);
+        seen
     }
 
     fn shard<Q: Hash + ?Sized>(&self, key: &Q) -> MutexGuard<'_, Shard<K>> {
-        // Only the low bits pick a shard, so truncating the hash is fine.
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "reduced modulo the shard count"
+        // Built from a `NonZeroUsize`, so `count` is never zero.
+        let count = self.shards.len() as u64;
+        // Reduced modulo the shard count, so the index fits a usize.
+        let index = usize::try_from(self.hasher.hash_one(key) % count).unwrap_or(0);
+        #[allow(
+            clippy::indexing_slicing,
+            reason = "index < count = shards.len(): reduced modulo the length just above"
         )]
-        let index = (self.hasher.hash_one(key) % self.shards.len() as u64) as usize;
-        lock(&self.shards[index])
+        let shard = &self.shards[index];
+        lock(shard)
     }
 }
 
-/// State is plain floats, so a poisoned shard is still consistent.
+/// TATs are plain durations, so a poisoned shard is still consistent.
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }

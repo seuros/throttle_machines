@@ -1,22 +1,25 @@
 [package]
 name = "throttle-machines"
 version = "0.5.0"
-edition = "2024"
+edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
 authors = ["Abdelkader Boudih <terminale@gmail.com>"]
-license = "MIT"
-description = "Rate limiting (GCRA, token bucket, fixed window) on a shared no_std gate contract"
+description = "Rate limiting (GCRA, token bucket, fixed window) on caller-supplied Duration clocks, no_std"
 repository = "https://github.com/seuros/throttle_machines"
 readme = "README.md"
 keywords = ["rate-limiting", "throttling", "gcra", "token-bucket", "no-std"]
-categories = ["algorithms"]
-exclude = ["src/**/tests.rs", "tests/"]
-[lib]
-crate-type = ["lib"]
+categories = ["no-std", "algorithms"]
+exclude = ["src/**/tests.rs", "src/tests/", "tests/"]
 
 [features]
-default = ["std"]
+default = []
+# `KeyedGcra`: per-key GCRA state in a sharded, mutex-guarded `HashMap`. It
+# allocates and locks, so it needs `std`; the gates themselves never do.
 std = []
+
+[dev-dependencies]
+matryona-machines = { workspace = true, features = ["testing"] }
 
 [lints]
 workspace = true

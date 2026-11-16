@@ -14,9 +14,10 @@ module ThrottleMachines
         @name = name
         @block = block
 
+        # `findtime` and `bantime` are Integer nanoseconds.
         @maxretry = options[:maxretry] || 5
-        @findtime = options[:findtime] || 60
-        @bantime = options[:bantime] || 300
+        @findtime = options[:findtime] || (60 * NS_PER_SECOND)
+        @bantime = options[:bantime] || (300 * NS_PER_SECOND)
       end
 
       private

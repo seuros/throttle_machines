@@ -1,27 +1,39 @@
+-- Token bucket admission, the native core's arithmetic in Integer
+-- nanoseconds. `now` is the server's TIME, one clock for every client. The
+-- refill instant is stored relative to `epoch`, a TIME second, and rebased
+-- to the current second on every write, so every number stays small enough
+-- to be exact in Lua's doubles.
+-- ARGV: capacity, refill_every, ttl (ms).
+-- Reply: {1, tokens left} or {0, 0} (throttled, nothing stored).
 local key = KEYS[1]
 local capacity = tonumber(ARGV[1])
-local refill_rate = tonumber(ARGV[2])
+local refill = tonumber(ARGV[2])
 local ttl = tonumber(ARGV[3])
-local now = tonumber(ARGV[4])
 
-local bucket = redis.call('HMGET', key, 'tokens', 'last_refill')
-local tokens = tonumber(bucket[1]) or capacity
-local last_refill = tonumber(bucket[2]) or now
+local time = redis.call('TIME')
+local second = tonumber(time[1])
+local bucket = redis.call('HMGET', key, 'tokens', 'refilled_at', 'epoch')
+local shift = (second - (tonumber(bucket[3]) or second)) * 1000000000
+local now = shift + tonumber(time[2]) * 1000
 
--- Refill tokens
-local elapsed = now - last_refill
-local tokens_to_add = elapsed * refill_rate
-tokens = math.min(tokens + tokens_to_add, capacity)
+local tokens = math.min(tonumber(bucket[1]) or capacity, capacity)
+local refilled_at = tonumber(bucket[2]) or 0
 
--- `elapsed` carries the clock's rounding; a token due exactly now may come
--- out a hair short of 1. The slack scales with the clock, as in the native core.
-local slack = 2.220446049250313e-16 * 64 * math.max(math.abs(now), 1) * refill_rate
-local allow = tokens >= 1 - slack
-if allow then
-  tokens = math.max(tokens - 1, 0)
-  redis.call('HMSET', key, 'tokens', tokens, 'last_refill', now)
-  redis.call('EXPIRE', key, ttl)
+-- A partial span toward the next token is kept; nothing is banked past capacity.
+local earned = math.floor(math.max(now - refilled_at, 0) / refill)
+if tokens + earned >= capacity then
+  tokens = capacity
+  refilled_at = math.max(refilled_at, now)
+else
+  tokens = tokens + earned
+  refilled_at = refilled_at + earned * refill
 end
 
--- Redis truncates Lua numbers in replies to integers; send the count as text.
-return { allow and 1 or 0, string.format('%.17g', tokens) }
+if tokens < 1 then
+  return { 0, 0 }
+end
+
+tokens = tokens - 1
+redis.call('HSET', key, 'tokens', tokens, 'refilled_at', string.format('%.0f', refilled_at - shift), 'epoch', second)
+redis.call('PEXPIRE', key, ttl)
+return { 1, tokens }

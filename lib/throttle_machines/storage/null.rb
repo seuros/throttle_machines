@@ -2,8 +2,9 @@
 
 module ThrottleMachines
   module Storage
+    # Admits everything and keeps nothing: every check answers the policy's
+    # full allowance, every wait is zero.
     class Null < Base
-      # Rate limiting operations
       def increment_counter(_key, _window, _amount = 1)
         0
       end
@@ -20,49 +21,38 @@ module ThrottleMachines
         true
       end
 
-      # GCRA operations
-      def check_gcra_limit(_key, _emission_interval, _delay_tolerance, _ttl)
-        {
-          allowed: true,
-          retry_after: 0,
-          tat: 0
-        }
+      def check_gcra(_key, policy, _ttl)
+        Gcra.new(policy).peek(0) - 1
       end
 
-      def peek_gcra_limit(_key, _emission_interval, _delay_tolerance)
-        {
-          allowed: true,
-          retry_after: 0,
-          tat: 0
-        }
+      def peek_gcra(_key, policy)
+        Gcra.new(policy).peek(0)
+      end
+
+      def gcra_retry_after(_key, _policy)
+        0
       end
 
       def reset_gcra(_key)
         true
       end
 
-      # Token bucket operations
-      def check_token_bucket(_key, capacity, _refill_rate, _ttl)
-        {
-          allowed: true,
-          retry_after: 0,
-          tokens_remaining: capacity
-        }
+      def check_token_bucket(_key, policy, _ttl)
+        policy.capacity - 1
       end
 
-      def peek_token_bucket(_key, capacity, _refill_rate)
-        {
-          allowed: true,
-          retry_after: 0,
-          tokens_remaining: capacity
-        }
+      def peek_token_bucket(_key, policy)
+        policy.capacity
+      end
+
+      def token_bucket_retry_after(_key, _policy)
+        0
       end
 
       def reset_token_bucket(_key)
         true
       end
 
-      # Utility operations
       def clear(_pattern = nil)
         true
       end

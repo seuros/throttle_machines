@@ -7,14 +7,16 @@ module ThrottleMachines
     class Configuration
       DEFAULT_BLOCKLISTED_RESPONDER = ->(_req) { [403, { 'content-type' => 'text/plain' }, ["Forbidden\n"]] }
 
+      # `retry_after` in the match data is Integer nanoseconds; the header is
+      # whole seconds, rounded up.
       DEFAULT_THROTTLED_RESPONDER = lambda do |req|
         match_data = req.env['rack.attack.match_data']
-        retry_after = match_data[:retry_after] || 60
+        retry_after = (match_data[:retry_after] || (60 * NS_PER_SECOND)).ceildiv(NS_PER_SECOND)
 
         [429, { 'content-type' => 'text/plain', 'retry-after' => retry_after.to_s }, ["Retry later\n"]]
       end
 
-      attr_reader :throttles, :tracks, :safelists, :blocklists
+      attr_reader :throttles, :tracks, :safelists, :blocklists, :fail2bans, :allow2bans
       attr_accessor :throttled_responder, :blocklisted_responder
 
       def initialize

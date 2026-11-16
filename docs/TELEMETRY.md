@@ -20,57 +20,95 @@ In the vast darkness of space, telemetry is your eyes and ears. This guide shows
 ## 📊 Basic Instrumentation
 
 ### ActiveSupport::Notifications Integration
+
+Every limiter decision is published as `<event>.throttle_machines` through `ActiveSupport::Notifications` (or `config.instrumentation_backend`, anything answering `instrument`). Payload periods, `retry_after` and durations are Integer nanoseconds.
+
+| Event | Payload |
+|-------|---------|
+| `rate_limit.checked.throttle_machines` (`allow?`) | `key`, `limit`, `period`, `algorithm`, `allowed`, `remaining` (nil) |
+| `rate_limit.allowed.throttle_machines` (`throttle!` admitted) | `key`, `limit`, `period`, `algorithm`, `remaining` |
+| `rate_limit.throttled.throttle_machines` (`throttle!` refused) | `key`, `limit`, `period`, `algorithm`, `retry_after` |
+| `hedged_request.started.throttle_machines` | `request_id`, `max_attempts` |
+| `hedged_request.winner.throttle_machines` | `request_id`, `winning_attempt`, `duration` |
+
+Rate limit events are instrumented without a block, so `finish - start` is zero: time the work yourself. Circuits are BreakerMachines' business and publish under its own prefix: `breaker_machines.opened`, `.closed`, `.half_opened` (payload `circuit:`) and `breaker_machines.rejected` (`circuit:`, `refusal:`).
+
 ```ruby
 # config/initializers/throttle_telemetry.rb
+NS = ThrottleMachines::NS_PER_SECOND # 1_000_000_000
+MS = 1_000_000
 
-# Subscribe to all ThrottleMachines events
-ActiveSupport::Notifications.subscribe(/throttle_machines/) do |name, start, finish, id, payload|
-  duration = (finish - start) * 1000  # Convert to milliseconds
-
+# Subscribe to all limiter and hedged request events
+ActiveSupport::Notifications.subscribe(/\.throttle_machines\z/) do |name, _start, _finish, _id, payload|
   case name
-  when "throttle.throttle_machines"
-    Rails.logger.info "⚡ Rate limit checked: #{payload[:key]} - " \
-                     "Allowed: #{payload[:allowed]} - Duration: #{duration.round(2)}ms"
+  when "rate_limit.checked.throttle_machines", "rate_limit.allowed.throttle_machines"
+    allowed = payload.fetch(:allowed, true)
+    Rails.logger.info "⚡ Rate limit checked: #{payload[:key]} - Allowed: #{allowed}"
 
     # Send to metrics system
-    StatsD.increment("throttle.checks", tags: ["allowed:#{payload[:allowed]}"])
-    StatsD.histogram("throttle.check_duration", duration)
+    StatsD.increment("throttle.checks", tags: ["allowed:#{allowed}", "algorithm:#{payload[:algorithm]}"])
 
-  when "circuit_open.throttle_machines"
-    Rails.logger.warn "🛡️ Circuit breaker opened: #{payload[:name]} - " \
-                     "Failures: #{payload[:failure_count]}"
+  when "rate_limit.throttled.throttle_machines"
+    StatsD.increment("throttle.checks", tags: ["allowed:false", "algorithm:#{payload[:algorithm]}"])
+    StatsD.histogram("throttle.retry_after_ms", payload[:retry_after] / MS)
 
-    # Alert operations team
-    PagerDuty.trigger(
-      "Circuit breaker #{payload[:name]} is open",
-      details: payload
-    )
-
-  when "circuit_reset.throttle_machines"
-    Rails.logger.info "✅ Circuit breaker reset: #{payload[:name]}"
-
-    StatsD.event("Circuit breaker recovered",
-                "#{payload[:name]} is operational again")
+  when "hedged_request.winner.throttle_machines"
+    StatsD.histogram("hedged.duration_ms", payload[:duration] / MS,
+                     tags: ["attempt:#{payload[:winning_attempt]}"])
   end
 end
 
-# Rack middleware telemetry
-ActiveSupport::Notifications.subscribe(/rack_attack/) do |name, start, finish, id, payload|
-  request = payload[:request]
+# Shield telemetry, straight from BreakerMachines
+ActiveSupport::Notifications.subscribe(/\Abreaker_machines\./) do |name, _start, _finish, _id, payload|
+  circuit = BreakerMachines::Registry.instance.find(payload[:circuit])
 
   case name
-  when "throttle.rack_attack"
-    StatsD.increment("rack.throttled",
-      tags: ["path:#{request.path}", "ip:#{request.ip}"])
+  when "breaker_machines.opened"
+    Rails.logger.warn "🛡️ Circuit breaker opened: #{payload[:circuit]} - " \
+                     "Failures: #{circuit&.stats&.failure_count}"
 
-  when "blocklist.rack_attack"
+    # Alert operations team
+    PagerDuty.trigger(
+      "Circuit breaker #{payload[:circuit]} is open",
+      details: circuit&.to_h
+    )
+
+  when "breaker_machines.closed"
+    Rails.logger.info "✅ Circuit breaker reset: #{payload[:circuit]}"
+
+    StatsD.event("Circuit breaker recovered",
+                "#{payload[:circuit]} is operational again")
+  end
+end
+```
+
+### Rack Middleware Telemetry
+
+`ThrottleMachines::RackMiddleware` publishes through its own `notifier` (`ThrottleMachines::RackMiddleware.notifier`, default `ActiveSupport::Notifications`) as `<match_type>.throttle_machines`, with the request as the only payload: `throttle`, `blocklist`, `safelist`, `track`, `fail2ban`. The match details live on the env under `rack.attack.match_data` (spans in nanoseconds: `period`, `retry_after`, `findtime`, `bantime`, `time_until_unban`).
+
+```ruby
+RACK_EVENTS = /\A(throttle|blocklist|safelist|track|fail2ban)\.throttle_machines\z/
+
+ActiveSupport::Notifications.subscribe(RACK_EVENTS) do |name, _start, _finish, _id, payload|
+  request = payload[:request]
+  data = request.env["rack.attack.match_data"] || {}
+
+  case name
+  when "throttle.throttle_machines"
+    StatsD.increment("rack.throttled",
+      tags: ["rule:#{request.env['rack.attack.matched']}", "path:#{request.path}", "ip:#{request.ip}"])
+
+  when "blocklist.throttle_machines"
     Rails.logger.error "🚫 Blocked request from #{request.ip} to #{request.path}"
     SecurityAlert.notify("Blocked IP", ip: request.ip, path: request.path)
 
-  when "safelist.rack_attack"
+  when "fail2ban.throttle_machines"
+    Rails.logger.error "🚫 Banned #{request.ip} for #{data[:time_until_unban].ceildiv(NS)}s more"
+
+  when "safelist.throttle_machines"
     StatsD.increment("rack.safelisted")
 
-  when "track.rack_attack"
+  when "track.throttle_machines"
     # Log suspicious activity for analysis
     SuspiciousActivity.record(
       ip: request.ip,
@@ -86,8 +124,20 @@ end
 ## 🛸 Custom Telemetry Collectors
 
 ### Comprehensive Metrics Collector
+
+ThrottleMachines keeps no registry of limiters: they are cheap frozen values over shared storage. Watch the ones you care about. Circuits do have a registry: `BreakerMachines::Registry.instance`.
+
 ```ruby
 class ThrottleTelemetry
+  NS = ThrottleMachines::NS_PER_SECOND
+  MS = 1_000_000
+
+  # The limiters worth watching, rebuilt on demand (same key, same state)
+  WATCHED = {
+    "api" => -> { ThrottleMachines.limiter("api", limit: 1000, period: 60 * NS) },
+    "login" => -> { ThrottleMachines.limiter("login", limit: 5, period: 300 * NS) }
+  }.freeze
+
   class << self
     def collect_metrics
       {
@@ -101,77 +151,52 @@ class ThrottleTelemetry
     private
 
     def collect_limiter_metrics
-      # Collect metrics for all active limiters
-      limiters = ThrottleMachines.limiters  # Hypothetical method
+      WATCHED.map do |name, build|
+        snapshot = build.call.to_h  # key, limit, period (ns), algorithm, remaining, retry_after (ns)
+        used = snapshot[:limit] - snapshot[:remaining]
 
-      limiters.map do |name, limiter|
-        {
+        snapshot.merge(
           name: name,
-          limit: limiter.limit,
-          period: limiter.period,
-          algorithm: limiter.algorithm,
-          current_usage: limiter.current_count,
-          usage_percentage: (limiter.current_count.to_f / limiter.limit * 100).round(2)
-        }
+          usage_percentage: (used * 100.0 / snapshot[:limit]).round(2)
+        )
       end
     end
 
     def collect_breaker_metrics
-      breakers = ThrottleMachines.breakers  # Hypothetical method
-
-      breakers.map do |name, breaker|
+      BreakerMachines::Registry.instance.all_circuits.map do |breaker|
+        stats = breaker.stats
         {
-          name: name,
-          state: breaker.status_name,
-          failure_count: breaker.stats.failure_count,
-          last_failure: breaker.last_failure_time,
-          opens_count: breaker.total_opens,
-          uptime_percentage: calculate_uptime(breaker)
+          name: breaker.name,
+          state: breaker.state,
+          failure_count: stats.failure_count,
+          last_failure_at: stats.last_failure_at,  # ns, on the circuit's clock
+          opened_at: stats.opened_at,              # ns, nil unless open
+          retry_after: breaker.retry_after         # ns until a probe may run
         }
       end
     end
 
     def collect_storage_metrics
-      storage = ThrottleMachines.configuration.storage
+      storage = ThrottleMachines.storage
+      type = storage.class.name.split("::").last.downcase
 
-      if storage.is_a?(ThrottleMachines::Storage::Redis)
-        measure_redis_health(storage)
-      else
-        { type: "memory", status: "healthy" }
-      end
-    end
-
-    def measure_redis_health(storage)
-      start = Time.current
-      storage.with_redis { |r| r.ping }
-      latency = (Time.current - start) * 1000
+      started = ThrottleMachines.monotonic_time
+      healthy = storage.healthy?
+      latency = ThrottleMachines.monotonic_time - started
 
       {
-        type: "redis",
-        status: "healthy",
-        latency_ms: latency.round(2),
-        pool_size: storage.pool.size,
-        pool_available: storage.pool.available
+        type: type,
+        status: healthy ? "healthy" : "unhealthy",
+        latency_ms: latency / MS
       }
-    rescue => e
-      {
-        type: "redis",
-        status: "unhealthy",
-        error: e.message
-      }
-    end
-
-    def calculate_uptime(breaker)
-      total_time = Time.current - breaker.created_at
-      open_time = breaker.time_spent_open
-      ((total_time - open_time) / total_time * 100).round(2)
     end
 
     def collect_system_metrics
+      summary = BreakerMachines::Registry.instance.stats_summary
       {
-        total_limiters: ThrottleMachines.limiters.count,
-        total_breakers: ThrottleMachines.breakers.count,
-        memory_usage_mb: (ObjectSpace.memsize_of_all(ThrottleMachines) / 1024.0 / 1024.0).round(2),
+        watched_limiters: WATCHED.size,
+        total_breakers: summary[:total],
+        breakers_by_state: summary[:by_state],
         version: ThrottleMachines::VERSION
       }
     end
@@ -216,12 +241,12 @@ class TelemetryDashboard
     end
 
     # Check for open circuits
-    open_circuits = ThrottleMachines.breakers.select { |_, b| b.status_name == :open }
+    open_circuits = BreakerMachines::Registry.instance.all_circuits.select(&:open?)
     if open_circuits.any?
       alerts << {
         level: "critical",
         message: "#{open_circuits.count} circuit(s) open",
-        circuits: open_circuits.keys
+        circuits: open_circuits.map(&:name)
       }
     end
 
@@ -242,15 +267,11 @@ class TelemetryDashboard
     score -= [throttle_rate, 30].min
 
     # Deduct for open circuits
-    open_circuits = ThrottleMachines.breakers.count { |_, b| b.status_name == :open }
+    open_circuits = BreakerMachines::Registry.instance.all_circuits.count(&:open?)
     score -= (open_circuits * 10)
 
-    # Deduct for storage issues
-    begin
-      ThrottleMachines.configuration.storage.healthy?
-    rescue
-      score -= 20
-    end
+    # Deduct for storage issues (healthy? answers false, it doesn't raise)
+    score -= 20 unless ThrottleMachines.storage.healthy?
 
     [score, 0].max  # Never go below 0
   end
@@ -280,8 +301,12 @@ end
 ### Request Performance Tracking
 ```ruby
 class PerformanceMonitor
+  NS = ThrottleMachines::NS_PER_SECOND
+  MS = 1_000_000
+  SLOW = 1 * NS
+
   def self.track_request(name, &block)
-    start_time = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    start_time = ThrottleMachines.monotonic_time  # Integer ns
     memory_before = current_memory_usage
 
     begin
@@ -298,24 +323,24 @@ class PerformanceMonitor
   private
 
   def self.track_success(name, start_time, memory_before)
-    duration = Process.clock_gettime(Process::CLOCK_MONOTONIC) - start_time
+    duration = ThrottleMachines.monotonic_time - start_time
     memory_delta = current_memory_usage - memory_before
 
-    StatsD.histogram("request.duration", duration * 1000, tags: ["endpoint:#{name}"])
+    StatsD.histogram("request.duration", duration / MS, tags: ["endpoint:#{name}"])
     StatsD.histogram("request.memory_delta", memory_delta, tags: ["endpoint:#{name}"])
 
     # Log slow requests
-    if duration > 1.0  # 1 second
-      Rails.logger.warn "Slow request detected: #{name} took #{duration.round(3)}s"
+    if duration > SLOW
+      Rails.logger.warn "Slow request detected: #{name} took #{duration / MS}ms"
     end
   end
 
   def self.track_failure(name, start_time, memory_before, error)
-    duration = Process.clock_gettime(Process::CLOCK_MONOTONIC) - start_time
+    duration = ThrottleMachines.monotonic_time - start_time
 
     StatsD.increment("request.errors", tags: ["endpoint:#{name}", "error:#{error.class}"])
 
-    Rails.logger.error "Request failed: #{name} - #{error.message} (#{duration.round(3)}s)"
+    Rails.logger.error "Request failed: #{name} - #{error.message} (#{duration / MS}ms)"
   end
 
   def self.current_memory_usage
@@ -413,8 +438,9 @@ class ThrottleAnomalyDetector
   end
 
   def self.circuit_cascade_risk?
-    at_risk = ThrottleMachines.breakers.count do |_, breaker|
-      breaker.failure_count > (breaker.threshold * 0.7)
+    at_risk = BreakerMachines::Registry.instance.all_circuits.count do |breaker|
+      threshold = breaker.policy.threshold.count
+      threshold && breaker.stats.failure_count > (threshold * 0.7)
     end
 
     at_risk >= 3  # 3 or more circuits near failure
@@ -437,7 +463,7 @@ class ThrottleAnomalyDetector
 
     # Store for analysis
     redis.lpush("anomalies:#{Date.today}", anomaly.to_json)
-    redis.expire("anomalies:#{Date.today}", 7.days)
+    redis.expire("anomalies:#{Date.today}", 7 * 86_400)  # Redis EXPIRE speaks seconds
   end
 
   def self.format_anomaly(anomaly)
@@ -523,21 +549,20 @@ end
 ```ruby
 # lib/throttle_machines/prometheus_exporter.rb
 require 'prometheus/client'
+require 'prometheus/client/formats/text'
 
 class ThrottleMachines::PrometheusExporter
+  STATE_VALUES = { closed: 0, open: 1, half_open: 2 }.freeze
+
   def initialize
     @registry = Prometheus::Client.registry
     setup_metrics
+    subscribe
   end
 
-  def call(env)
+  def call(_env)
     update_metrics
-
-    if env["PATH_INFO"] == "/metrics"
-      [200, {"content-type" => "text/plain"}, [Prometheus::Client::Formats::Text.marshal(@registry)]]
-    else
-      [404, {"content-type" => "text/plain"}, ["Not Found"]]
-    end
+    [200, {"content-type" => "text/plain"}, [Prometheus::Client::Formats::Text.marshal(@registry)]]
   end
 
   private
@@ -557,27 +582,30 @@ class ThrottleMachines::PrometheusExporter
 
     @storage_latency = @registry.histogram(
       :storage_latency_seconds,
-      docstring: "Storage operation latency",
+      docstring: "Storage health check latency",
       labels: [:operation]
     )
   end
 
+  # Count decisions as they happen, instead of probing limiters on scrape
+  def subscribe
+    ActiveSupport::Notifications.subscribe(/\Arate_limit\.(allowed|throttled)\.throttle_machines\z/) do |name|
+      result = name.start_with?("rate_limit.allowed") ? "allowed" : "throttled"
+      @request_counter.increment(labels: { result: result })
+    end
+  end
+
   def update_metrics
-    # Update throttle metrics
-    ThrottleMachines.limiters.each do |name, limiter|
-      allowed = limiter.allowed?
-      @request_counter.increment(labels: { result: allowed ? "allowed" : "throttled" })
+    # Update circuit breaker metrics
+    BreakerMachines::Registry.instance.all_circuits.each do |breaker|
+      @circuit_state.set(STATE_VALUES.fetch(breaker.state), labels: { name: breaker.name })
     end
 
-    # Update circuit breaker metrics
-    ThrottleMachines.breakers.each do |name, breaker|
-      state_value = case breaker.status_name
-                    when :closed then 0
-                    when :open then 1
-                    when :half_open then 2
-                    end
-      @circuit_state.set(state_value, labels: { name: name })
-    end
+    # Prometheus wants seconds: convert at the export boundary only
+    started = ThrottleMachines.monotonic_time
+    ThrottleMachines.storage.healthy?
+    elapsed = ThrottleMachines.monotonic_time - started
+    @storage_latency.observe(elapsed.fdiv(ThrottleMachines::NS_PER_SECOND), labels: { operation: "health" })
   end
 end
 
@@ -633,8 +661,8 @@ class HealthCheckController < ApplicationController
 
   def check_rate_limiting
     # Test creating a limiter
-    test_limiter = ThrottleMachines.limiter("health_check", limit: 1, period: 1)
-    test_limiter.allowed?
+    test_limiter = ThrottleMachines.limiter("health_check", limit: 1, period: 1 * ThrottleMachines::NS_PER_SECOND)
+    test_limiter.allow?
 
     { status: "healthy", message: "Rate limiting operational" }
   rescue => e
@@ -642,28 +670,31 @@ class HealthCheckController < ApplicationController
   end
 
   def check_circuit_breakers
-    open_circuits = ThrottleMachines.breakers.select { |_, b| b.status_name == :open }
+    open_circuits = BreakerMachines::Registry.instance.all_circuits.select(&:open?).map(&:name)
 
     if open_circuits.empty?
       { status: "healthy", message: "All circuits closed" }
     elsif open_circuits.size < 3
-      { status: "degraded", message: "#{open_circuits.size} circuits open", circuits: open_circuits.keys }
+      { status: "degraded", message: "#{open_circuits.size} circuits open", circuits: open_circuits }
     else
-      { status: "critical", message: "Multiple circuits open", circuits: open_circuits.keys }
+      { status: "critical", message: "Multiple circuits open", circuits: open_circuits }
     end
   end
 
   def check_storage
-    start = Time.current
-    ThrottleMachines.configuration.storage.healthy?
-    latency = (Time.current - start) * 1000
+    ms = 1_000_000
+    start = ThrottleMachines.monotonic_time
+    healthy = ThrottleMachines.storage.healthy?
+    latency = ThrottleMachines.monotonic_time - start  # Integer ns
 
-    if latency < 10
-      { status: "healthy", message: "Storage responsive", latency_ms: latency.round(2) }
-    elsif latency < 50
-      { status: "degraded", message: "Storage slow", latency_ms: latency.round(2) }
+    if !healthy
+      { status: "critical", message: "Storage unavailable" }
+    elsif latency < 10 * ms
+      { status: "healthy", message: "Storage responsive", latency_ms: latency / ms }
+    elsif latency < 50 * ms
+      { status: "degraded", message: "Storage slow", latency_ms: latency / ms }
     else
-      { status: "critical", message: "Storage very slow", latency_ms: latency.round(2) }
+      { status: "critical", message: "Storage very slow", latency_ms: latency / ms }
     end
   rescue => e
     { status: "critical", message: "Storage unavailable", error: e.message }
@@ -671,7 +702,7 @@ class HealthCheckController < ApplicationController
 
   def check_performance
     # Check recent performance metrics
-    avg_response_time = Rails.cache.fetch("metrics:avg_response_time", expires_in: 1.minute) do
+    avg_response_time = Rails.cache.fetch("metrics:avg_response_time", expires_in: 60) do
       calculate_average_response_time
     end
 

@@ -1,7 +1,9 @@
 # frozen_string_literal: true
 
 module ThrottleMachines
-  # Instrumentation module for emitting events via ActiveSupport::Notifications
+  # Events emitted through ActiveSupport::Notifications (or any backend
+  # answering `instrument`). Periods, waits and durations in payloads are
+  # Integer nanoseconds.
   module Instrumentation
     class << self
       attr_writer :enabled, :backend
@@ -15,8 +17,14 @@ module ThrottleMachines
         @backend ||= ActiveSupport::Notifications
       end
 
+      # Whether events are published: callers whose payload costs a storage
+      # read ask first, so a silenced gem pays nothing for it.
+      def active?
+        enabled && !backend.nil?
+      end
+
       def instrument(event_name, payload = {}, &block)
-        if !enabled || backend.nil?
+        unless active?
           return yield if block_given?
 
           return
@@ -63,72 +71,6 @@ module ThrottleMachines
         instrument('rate_limit.throttled', payload)
       end
 
-      # Circuit breaker events
-      def circuit_opened(breaker, failure_count:)
-        payload = {
-          key: (breaker.respond_to?(:name) ? breaker.name : breaker.to_s),
-          failure_threshold: (breaker.respond_to?(:configuration) ? breaker.configuration[:failure_threshold] : nil),
-          timeout: (breaker.respond_to?(:configuration) ? breaker.configuration[:reset_timeout] : nil),
-          failure_count: failure_count
-        }
-        instrument('circuit_breaker.opened', payload)
-      end
-
-      def circuit_closed(breaker)
-        payload = {
-          key: (breaker.respond_to?(:name) ? breaker.name : breaker.to_s),
-          failure_threshold: (breaker.respond_to?(:configuration) ? breaker.configuration[:failure_threshold] : nil),
-          timeout: (breaker.respond_to?(:configuration) ? breaker.configuration[:reset_timeout] : nil)
-        }
-        instrument('circuit_breaker.closed', payload)
-      end
-
-      def circuit_half_opened(breaker)
-        payload = {
-          key: (breaker.respond_to?(:name) ? breaker.name : breaker.to_s),
-          failure_threshold: (breaker.respond_to?(:configuration) ? breaker.configuration[:failure_threshold] : nil),
-          timeout: (breaker.respond_to?(:configuration) ? breaker.configuration[:reset_timeout] : nil),
-          half_open_requests: (breaker.respond_to?(:configuration) ? breaker.configuration[:half_open_calls] : nil)
-        }
-        instrument('circuit_breaker.half_opened', payload)
-      end
-
-      def circuit_success(breaker)
-        payload = {
-          key: (breaker.respond_to?(:name) ? breaker.name : breaker.to_s),
-          state: (breaker.respond_to?(:to_h) ? breaker.to_h[:state] : nil)
-        }
-        instrument('circuit_breaker.success', payload)
-      end
-
-      def circuit_failure(breaker, error: nil)
-        payload = {
-          key: (breaker.respond_to?(:name) ? breaker.name : breaker.to_s),
-          state: (breaker.respond_to?(:to_h) ? breaker.to_h[:state] : nil),
-          error_class: error&.class&.name,
-          error_message: error&.message
-        }
-        instrument('circuit_breaker.failure', payload)
-      end
-
-      def circuit_rejected(breaker)
-        payload = {
-          key: (breaker.respond_to?(:name) ? breaker.name : breaker.to_s),
-          failure_threshold: (breaker.respond_to?(:configuration) ? breaker.configuration[:failure_threshold] : nil),
-          timeout: (breaker.respond_to?(:configuration) ? breaker.configuration[:reset_timeout] : nil)
-        }
-        instrument('circuit_breaker.rejected', payload)
-      end
-
-      # Cascade events
-      def cascade_triggered(primary_key, cascaded_key)
-        payload = {
-          primary_key: primary_key,
-          cascaded_key: cascaded_key
-        }
-        instrument('cascade.triggered', payload)
-      end
-
       # Hedged request events
       def hedged_request_started(request_id, attempts:)
         payload = {
@@ -145,13 +87,6 @@ module ThrottleMachines
           duration: duration
         }
         instrument('hedged_request.winner', payload)
-      end
-    end
-
-    # Null backend for when ActiveSupport::Notifications is not available
-    class NullBackend
-      def instrument(_name, _payload = {})
-        yield if block_given?
       end
     end
   end

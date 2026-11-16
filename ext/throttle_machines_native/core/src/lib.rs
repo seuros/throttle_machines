@@ -1,36 +1,50 @@
-//! Rate limiting algorithms for high-performance applications.
+//! Rate limiting on a caller-supplied clock: GCRA, token bucket and fixed
+//! window, each a small `Copy` value behind the shared [`Gate`] contract.
 //!
-//! This crate provides three rate limiting algorithms:
-//! - GCRA (Generic Cell Rate Algorithm)
-//! - Token Bucket
-//! - Fixed Window
+//! The crate is `no_std` and allocation-free; it reads no clock. `now` is a
+//! [`Duration`](core::time::Duration) since an epoch the caller picks, and so
+//! is every span. A refused call answers [`Refusal`] and changes nothing.
 //!
-//! All three implement the shared [`gate::Gate`] contract: a pure,
-//! caller-holds-state decision returning a [`gate::Decision`].
+//! The `std` feature adds [`KeyedGcra`], which keeps per-key GCRA state in a
+//! sharded, mutex-guarded map.
 //!
-//! All algorithms are `no_std` compatible when the `std` feature is disabled.
-//! With `std`, [`KeyedGcra`] keeps per-key GCRA state on a monotonic clock.
+//! ```
+//! use core::num::NonZeroU64;
+//! use core::time::Duration;
+//! use throttle_machines::{Gate, Gcra, GcraPolicy, Refusal};
+//!
+//! let policy = GcraPolicy::per(Duration::from_secs(1), NonZeroU64::new(2).unwrap(), NonZeroU64::MIN)
+//!     .unwrap();
+//! let mut gcra = Gcra::new(policy);
+//! let now = Duration::from_secs(100);
+//! assert_eq!(gcra.check(now), Ok(0));
+//! assert_eq!(gcra.check(now), Err(Refusal::Throttled));
+//! assert_eq!(gcra.retry_after(now), Duration::from_millis(500));
+//! ```
 
-#![cfg_attr(not(feature = "std"), no_std)]
+#![no_std]
+#![cfg_attr(not(test), deny(clippy::indexing_slicing))]
 
-pub mod fixed_window;
-pub mod gate;
-pub mod gcra;
 #[cfg(feature = "std")]
-pub mod keyed;
-pub mod token_bucket;
+extern crate std;
 
-#[cfg(test)]
-mod test_support;
+mod fixed_window;
+mod gate;
+mod gcra;
+#[cfg(feature = "std")]
+mod keyed;
+mod refusal;
+mod token_bucket;
 
 /// Compiles and runs the README's examples as doctests.
 #[cfg(doctest)]
 #[doc = include_str!("../README.md")]
 struct ReadmeDoctests;
 
-pub use fixed_window::{FixedWindow, FixedWindowParams, FixedWindowState};
-pub use gate::{Decision, Gate};
-pub use gcra::{Gcra, GcraParams};
+pub use fixed_window::{FixedWindow, FixedWindowPolicy};
+pub use gate::Gate;
+pub use gcra::{Gcra, GcraPolicy};
 #[cfg(feature = "std")]
 pub use keyed::KeyedGcra;
-pub use token_bucket::{TokenBucket, TokenBucketParams, TokenBucketState};
+pub use refusal::Refusal;
+pub use token_bucket::{TokenBucket, TokenBucketPolicy};

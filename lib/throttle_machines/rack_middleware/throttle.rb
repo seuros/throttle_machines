@@ -13,7 +13,8 @@ module ThrottleMachines
         raise ArgumentError, 'Must pass :period option' unless options[:period]
 
         @limit = options[:limit]
-        @period = options[:period].to_i
+        # Integer nanoseconds, or a callable answering them per request.
+        @period = options[:period]
         @algorithm = options[:algorithm] || :fixed_window
       end
 

@@ -11,13 +11,15 @@ class RateLimitTestControllerTest < ActionDispatch::IntegrationTest
     ThrottleMachines::RackMiddleware.enabled = true
 
     # Reconfigure the rules for testing
-    ThrottleMachines::RackMiddleware.throttle('ip', limit: 100, period: 60, &:ip)
+    ThrottleMachines::RackMiddleware.throttle('ip', limit: 100, period: 60 * ThrottleMachines::NS_PER_SECOND, &:ip)
 
-    ThrottleMachines::RackMiddleware.throttle('api', limit: 1000, period: 3600) do |req|
+    ThrottleMachines::RackMiddleware.throttle('api', limit: 1000,
+                                                    period: 3600 * ThrottleMachines::NS_PER_SECOND) do |req|
       "api:#{req.ip}" if req.path.start_with?('/api/')
     end
 
-    ThrottleMachines::RackMiddleware.throttle('payment', limit: 10, period: 60) do |req|
+    ThrottleMachines::RackMiddleware.throttle('payment', limit: 10,
+                                                        period: 60 * ThrottleMachines::NS_PER_SECOND) do |req|
       "payment:#{req.ip}" if req.path == '/test/payment'
     end
   end
@@ -34,7 +36,7 @@ class RateLimitTestControllerTest < ActionDispatch::IntegrationTest
   test 'exceeding rate limit returns 429' do
     # Set a lower limit for testing
     ThrottleMachines::RackMiddleware.clear!
-    ThrottleMachines::RackMiddleware.throttle('test', limit: 5, period: 60, &:ip)
+    ThrottleMachines::RackMiddleware.throttle('test', limit: 5, period: 60 * ThrottleMachines::NS_PER_SECOND, &:ip)
 
     # Make 5 requests (should all succeed)
     5.times do |i|
@@ -76,7 +78,7 @@ class RateLimitTestControllerTest < ActionDispatch::IntegrationTest
   test 'rate limit applies per IP address' do
     # Requests from different IPs should have separate limits
     ThrottleMachines::RackMiddleware.clear!
-    ThrottleMachines::RackMiddleware.throttle('test', limit: 2, period: 60, &:ip)
+    ThrottleMachines::RackMiddleware.throttle('test', limit: 2, period: 60 * ThrottleMachines::NS_PER_SECOND, &:ip)
 
     # Make 2 requests from IP 1
     2.times do

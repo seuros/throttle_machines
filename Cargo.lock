@@ -36,6 +36,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c4512299f36f043ab09a583e57bceb5a5aab7a73db1805848e8fef3c9e8c78b3"
 
 [[package]]
+name = "bytes"
+version = "1.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
+
+[[package]]
 name = "cexpr"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -110,6 +116,7 @@ version = "0.9.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "40ef424404d166cbb71c8b8d19c9c589c748c4547c1afa1928c5504299f6c713"
 dependencies = [
+ "bytes",
  "magnus-macros",
  "rb-sys",
  "rb-sys-env",
@@ -125,6 +132,15 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "matryona-machines"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cf8a06ab02efd767270815a1f515a40bbf3bfc77038e9360676ebe8d47833b07"
+dependencies = [
+ "magnus",
 ]
 
 [[package]]
@@ -264,12 +280,16 @@ dependencies = [
 [[package]]
 name = "throttle-machines"
 version = "0.5.0"
+dependencies = [
+ "matryona-machines",
+]
 
 [[package]]
 name = "throttle_machines_native"
 version = "0.4.2"
 dependencies = [
  "magnus",
+ "matryona-machines",
  "rb-sys",
  "throttle-machines",
 ]

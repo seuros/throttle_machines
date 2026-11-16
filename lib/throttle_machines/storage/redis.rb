@@ -4,7 +4,21 @@ require 'digest/sha1'
 
 module ThrottleMachines
   module Storage
+    # Limiter state in Redis, decided atomically by Lua scripts that repeat
+    # the native core's arithmetic in Integer nanoseconds.
+    #
+    # `now` is the server's clock: each script reads Redis TIME (whole
+    # microseconds), so processes on any number of hosts share one store and
+    # one clock. A server whose clock steps back (NTP, a failover to another
+    # host) is the only clock the limits see.
+    #
+    # Lua numbers are doubles, exact up to 2**53. Stored instants count from
+    # a TIME second kept beside them and are rebased to the current second on
+    # every write, so they stay small: arithmetic is exact while policy spans
+    # are under 2**53 ns (about 104 days) and a key idles no longer than
+    # that, which its TTL (twice the limiter's period) bounds.
     class Redis < Base
+      NS_PER_MILLISECOND = 1_000_000
       # Load Lua scripts from files
       LUA_SCRIPTS_DIR = File.expand_path('redis', __dir__)
 
@@ -21,6 +35,7 @@ module ThrottleMachines
       TOKEN_BUCKET_SHA = Digest::SHA1.hexdigest(TOKEN_BUCKET_SCRIPT)
       PEEK_GCRA_SHA = Digest::SHA1.hexdigest(PEEK_GCRA_SCRIPT)
       PEEK_TOKEN_BUCKET_SHA = Digest::SHA1.hexdigest(PEEK_TOKEN_BUCKET_SCRIPT)
+      INCREMENT_COUNTER_SHA = Digest::SHA1.hexdigest(INCREMENT_COUNTER_SCRIPT)
 
       # Keys a single SCAN round trip asks for.
       SCAN_BATCH = 100
@@ -34,92 +49,60 @@ module ThrottleMachines
         validate_redis_connection!
       end
 
-      # Rate limiting operations
       def increment_counter(key, window, amount = 1)
-        window_key = prefixed("#{key}:#{window}")
-
-        # Use Lua script for atomic increment with TTL
-        with_redis do |redis|
-          redis.eval(INCREMENT_COUNTER_SCRIPT, keys: [window_key], argv: [amount, window.to_i])
-        end
+        run_script(INCREMENT_COUNTER_SCRIPT, INCREMENT_COUNTER_SHA,
+                   keys: [window_key(key, window)], argv: [amount, milliseconds(window)])
       end
 
       def get_counter(key, window)
-        window_key = prefixed("#{key}:#{window}")
-        with_redis { |r| (r.get(window_key) || 0).to_i }
+        with_redis { |r| (r.get(window_key(key, window)) || 0).to_i }
       end
 
+      # Integer nanoseconds until the window's counter expires.
       def get_counter_ttl(key, window)
-        window_key = prefixed("#{key}:#{window}")
-        ttl = with_redis { |r| r.ttl(window_key) }
-        [ttl, 0].max
+        ttl = with_redis { |r| r.pttl(window_key(key, window)) }
+        [ttl, 0].max * NS_PER_MILLISECOND
       end
 
       def reset_counter(key, window)
-        window_key = prefixed("#{key}:#{window}")
-        with_redis { |r| r.del(window_key) }
+        with_redis { |r| r.del(window_key(key, window)) }
       end
 
-      # GCRA operations (atomic via Lua)
-      def check_gcra_limit(key, emission_interval, delay_tolerance, ttl)
-        now = current_time
-        result = run_script(GCRA_SCRIPT, GCRA_SHA,
-                            keys: [prefixed(key)],
-                            argv: [emission_interval, delay_tolerance, ttl, now])
+      def check_gcra(key, policy, ttl)
+        argv = [policy.emission_interval, policy.delay_tolerance, milliseconds(ttl)]
+        allowed, left = run_script(GCRA_SCRIPT, GCRA_SHA, keys: [prefixed(key)], argv: argv)
+        allowed == 1 ? Integer(left) : :throttled
+      end
 
-        allowed = result[0] == 1
-        tat = Float(result[1])
+      def peek_gcra(key, policy)
+        admitted(peek_gcra_reply(key, policy))
+      end
 
-        {
-          allowed: allowed,
-          retry_after: allowed ? 0 : (tat - now - delay_tolerance),
-          tat: tat
-        }
+      def gcra_retry_after(key, policy)
+        Integer(peek_gcra_reply(key, policy)[2])
       end
 
       def reset_gcra(key)
         delete_state(key)
       end
 
-      # Token bucket operations (atomic via Lua)
-      def check_token_bucket(key, capacity, refill_rate, ttl)
-        result = run_script(TOKEN_BUCKET_SCRIPT, TOKEN_BUCKET_SHA,
-                            keys: [prefixed(key)],
-                            argv: [capacity, refill_rate, ttl, current_time])
+      def check_token_bucket(key, policy, ttl)
+        argv = [policy.capacity, policy.refill_every, milliseconds(ttl)]
+        allowed, left = run_script(TOKEN_BUCKET_SCRIPT, TOKEN_BUCKET_SHA, keys: [prefixed(key)], argv: argv)
+        allowed == 1 ? Integer(left) : :throttled
+      end
 
-        token_bucket_result(result, refill_rate)
+      def peek_token_bucket(key, policy)
+        admitted(peek_token_bucket_reply(key, policy))
+      end
+
+      def token_bucket_retry_after(key, policy)
+        Integer(peek_token_bucket_reply(key, policy)[2])
       end
 
       def reset_token_bucket(key)
         delete_state(key)
       end
-
-      # Peek methods for non-consuming checks
-      def peek_gcra_limit(key, emission_interval, delay_tolerance)
-        now = current_time
-        result = run_script(PEEK_GCRA_SCRIPT, PEEK_GCRA_SHA,
-                            keys: [prefixed(key)],
-                            argv: [emission_interval, delay_tolerance, now])
-
-        allowed = result[0] == 1
-        tat = Float(result[1])
-
-        {
-          allowed: allowed,
-          retry_after: allowed ? 0 : (tat - now - delay_tolerance),
-          tat: tat
-        }
-      end
-
-      def peek_token_bucket(key, capacity, refill_rate)
-        result = run_script(PEEK_TOKEN_BUCKET_SCRIPT, PEEK_TOKEN_BUCKET_SHA,
-                            keys: [prefixed(key)],
-                            argv: [capacity, refill_rate, current_time])
-
-        token_bucket_result(result, refill_rate)
-      end
-
-      # No circuit breaker operations: breaker state is owned by BreakerMachines
 
       # Utility operations
       def clear(pattern = nil)
@@ -158,17 +141,28 @@ module ThrottleMachines
         end
       end
 
-      # `result` is [allowed, tokens]: the balance after an admission, or the
-      # fractional balance a refusal waits on. Matches Storage::Memory.
-      def token_bucket_result(result, refill_rate)
-        allowed = result[0] == 1
-        tokens = Float(result[1])
+      # A peek reply is [allowed, calls admitted, nanoseconds to wait].
+      def admitted(reply)
+        reply[0] == 1 ? Integer(reply[1]) : :throttled
+      end
 
-        {
-          allowed: allowed,
-          retry_after: allowed ? 0 : (1 - tokens) / refill_rate,
-          tokens_remaining: allowed ? tokens.floor : 0
-        }
+      def peek_gcra_reply(key, policy)
+        argv = [policy.emission_interval, policy.delay_tolerance]
+        run_script(PEEK_GCRA_SCRIPT, PEEK_GCRA_SHA, keys: [prefixed(key)], argv: argv)
+      end
+
+      def peek_token_bucket_reply(key, policy)
+        argv = [policy.capacity, policy.refill_every]
+        run_script(PEEK_TOKEN_BUCKET_SCRIPT, PEEK_TOKEN_BUCKET_SHA, keys: [prefixed(key)], argv: argv)
+      end
+
+      def window_key(key, window)
+        prefixed("#{key}:#{window}")
+      end
+
+      # Redis expiries are whole milliseconds; a span rounds up to at least one.
+      def milliseconds(nanoseconds)
+        [nanoseconds.ceildiv(NS_PER_MILLISECOND), 1].max
       end
 
       def prefixed(key)

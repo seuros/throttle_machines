@@ -22,6 +22,7 @@ module ThrottleMachines
     end
 
     WINDOW_START = 1_699_999_980
+    WINDOW = 60 * NS
 
     def setup
       super
@@ -31,50 +32,51 @@ module ThrottleMachines
     end
 
     def test_counts_within_a_window
-      3.times { @storage.increment_counter('api', 60) }
+      3.times { @storage.increment_counter('api', WINDOW) }
 
-      assert_equal 3, @storage.get_counter('api', 60)
-      assert_equal 5, @storage.increment_counter('api', 60, 2)
+      assert_equal 3, @storage.get_counter('api', WINDOW)
+      assert_equal 5, @storage.increment_counter('api', WINDOW, 2)
     end
 
     def test_windows_align_to_the_epoch
       travel_to Time.at(WINDOW_START + 40)
-      @storage.increment_counter('api', 60)
+      @storage.increment_counter('api', WINDOW)
 
-      assert_in_delta 20.0, @storage.get_counter_ttl('api', 60), 0.001
+      assert_equal 20 * NS, @storage.get_counter_ttl('api', WINDOW)
 
-      travel 20.seconds
+      travel_to Time.at(WINDOW_START + 60)
 
-      assert_equal 0, @storage.get_counter('api', 60)
-      assert_equal 1, @storage.increment_counter('api', 60)
+      assert_equal 0, @storage.get_counter('api', WINDOW)
+      assert_equal 1, @storage.increment_counter('api', WINDOW)
     end
 
     def test_counts_concurrent_increments_from_separate_instances
       threads = Array.new(8) do
         Thread.new do
           storage = Storage::Cache.new(cache_store: @cache)
-          100.times { storage.increment_counter('api', 60) }
+          100.times { storage.increment_counter('api', WINDOW) }
         end
       end
       threads.each(&:join)
 
-      assert_equal 800, @storage.get_counter('api', 60)
+      assert_equal 800, @storage.get_counter('api', WINDOW)
     end
 
     def test_reset_counter_clears_the_current_window
-      @storage.increment_counter('api', 60)
-      @storage.reset_counter('api', 60)
+      @storage.increment_counter('api', WINDOW)
+      @storage.reset_counter('api', WINDOW)
 
-      assert_equal 0, @storage.get_counter('api', 60)
+      assert_equal 0, @storage.get_counter('api', WINDOW)
     end
 
     def test_rejects_non_positive_windows
-      assert_raises(ArgumentError) { @storage.increment_counter('api', 0) }
-      assert_raises(ArgumentError) { @storage.get_counter_ttl('api', -1) }
+      assert_raises(RangeError) { @storage.increment_counter('api', 0) }
+      assert_raises(RangeError) { @storage.get_counter_ttl('api', -1) }
+      assert_raises(TypeError) { @storage.get_counter('api', 60.0) }
     end
 
     def test_limiter_throttles_through_the_cache
-      limiter = Limiter.new('api', limit: 2, period: 60, storage: @storage)
+      limiter = Limiter.new('api', limit: 2, period: WINDOW, storage: @storage)
       2.times { limiter.throttle! }
 
       error = assert_raises(ThrottledError) { limiter.throttle! }
@@ -88,8 +90,8 @@ module ThrottleMachines
       refute @storage.supports?(:token_bucket)
 
       %i[gcra token_bucket].each do |algorithm|
-        error = assert_raises(ArgumentError) do
-          Limiter.new('api', limit: 1, period: 60, algorithm: algorithm, storage: @storage)
+        error = assert_raises(RangeError) do
+          Limiter.new('api', limit: 1, period: WINDOW, algorithm: algorithm, storage: @storage)
         end
         assert_match(/does not support/, error.message)
       end
@@ -97,14 +99,14 @@ module ThrottleMachines
 
     def test_fails_open_when_the_store_does_not_count
       storage = Storage::Cache.new(cache_store: ActiveSupport::Cache::NullStore.new)
-      limiter = Limiter.new('api', limit: 1, period: 60, storage: storage)
+      limiter = Limiter.new('api', limit: 1, period: WINDOW, storage: storage)
 
       3.times { assert_nil limiter.throttle! }
     end
 
     def test_fails_closed_when_configured
       storage = Storage::Cache.new(cache_store: ActiveSupport::Cache::NullStore.new, fail_closed: true)
-      limiter = Limiter.new('api', limit: 1, period: 60, storage: storage)
+      limiter = Limiter.new('api', limit: 1, period: WINDOW, storage: storage)
 
       assert_raises(ThrottledError) { limiter.throttle! }
     end
@@ -113,28 +115,28 @@ module ThrottleMachines
       namespaced = ActiveSupport::Cache::MemoryStore.new(namespace: 'app')
       storage = Storage::Cache.new(cache_store: namespaced)
       namespaced.write('unrelated', 'kept')
-      storage.increment_counter('login:1.2.3.4', 60)
-      storage.increment_counter('login:5.6.7.8', 60)
+      storage.increment_counter('login:1.2.3.4', WINDOW)
+      storage.increment_counter('login:5.6.7.8', WINDOW)
 
       storage.clear('login:1.2.3.4*')
 
-      assert_equal 0, storage.get_counter('login:1.2.3.4', 60)
-      assert_equal 1, storage.get_counter('login:5.6.7.8', 60)
+      assert_equal 0, storage.get_counter('login:1.2.3.4', WINDOW)
+      assert_equal 1, storage.get_counter('login:5.6.7.8', WINDOW)
 
       storage.clear
 
-      assert_equal 0, storage.get_counter('login:5.6.7.8', 60)
+      assert_equal 0, storage.get_counter('login:5.6.7.8', WINDOW)
       assert_equal 'kept', namespaced.read('unrelated')
     end
 
     def test_reset_key_deletes_only_that_key_and_the_windows_it_owns
-      @storage.increment_counter('account:1', 60)
-      @storage.increment_counter('account:10', 60)
+      @storage.increment_counter('account:1', WINDOW)
+      @storage.increment_counter('account:10', WINDOW)
 
       @storage.reset_key('account:1')
 
-      assert_equal 0, @storage.get_counter('account:1', 60)
-      assert_equal 1, @storage.get_counter('account:10', 60)
+      assert_equal 0, @storage.get_counter('account:1', WINDOW)
+      assert_equal 1, @storage.get_counter('account:10', WINDOW)
     end
 
     def test_reset_key_passes_the_key_to_redis_as_a_literal

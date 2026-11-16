@@ -10,24 +10,14 @@ module ThrottleMachines
         key = "fail2ban:#{@name}:#{discriminator}"
 
         # Use a globally managed BreakerMachines circuit as the ban mechanism
-        breaker = BreakerMachines::Registry.instance.get_or_create_dynamic_circuit(
-          key,
-          self,
-          failure_threshold: @maxretry,
-          failure_window: @findtime,
-          reset_timeout: @bantime
-        )
+        breaker = Breakers.dynamic(key, self, @maxretry, @findtime, @bantime)
 
         # Check if circuit is open (banned)
         if breaker.open?
           stats = breaker.stats
-          now = BreakerMachines.monotonic_time
-          time_until_unban = if stats.opened_at
-                               remaining = @bantime - (now - stats.opened_at)
-                               remaining.positive? ? remaining : 0
-                             else
-                               @bantime
-                             end
+          # Integer nanoseconds, like findtime and bantime.
+          banned_for = Breakers.since(breaker)
+          time_until_unban = banned_for ? [@bantime - banned_for, 0].max : @bantime
 
           request.env['rack.attack.matched'] = @name
           request.env['rack.attack.match_type'] = :fail2ban
@@ -57,13 +47,7 @@ module ThrottleMachines
         # Use the breaker to record a failure if block returns true
         return unless yield
 
-        breaker = BreakerMachines::Registry.instance.get_or_create_dynamic_circuit(
-          key,
-          self,
-          failure_threshold: @maxretry,
-          failure_window: @findtime,
-          reset_timeout: @bantime
-        )
+        breaker = Breakers.dynamic(key, self, @maxretry, @findtime, @bantime)
 
         # Record failure by trying to call through the breaker
         # and letting it fail

@@ -175,15 +175,13 @@ jobs:
 
       - name: Verify native extension loaded
         run: |
+          # The native extension is required; there is no pure-Ruby fallback.
           ruby -e "
-            require 'throttle_machines'
-            puts 'Gem loaded successfully'
-            begin
-              require 'throttle_machines_native'
-              puts 'Native backend available'
-            rescue LoadError
-              puts 'Native backend not available (fallback to pure Ruby)'
-            end
+            gem 'throttle_machines'
+            spec = Gem.loaded_specs.fetch('throttle_machines')
+            native = Dir[File.join(spec.full_gem_path, 'lib/throttle_machines_native/*.{so,bundle}')]
+            abort 'native extension missing' if native.empty?
+            puts 'Native extension present: ' + native.first
           "
 
   smoke-test-musl:
@@ -223,16 +221,14 @@ jobs:
 
       - name: Verify no glibc linkage
         run: |
+          # Loading the extension alone raises NameError (the gem defines the
+          # classes it needs first), which proves it linked and ran its init.
           ruby -e "
-            require 'throttle_machines'
-            puts 'Gem loaded successfully on Alpine (musl)'
+            gem 'throttle_machines'
             begin
-              require 'throttle_machines_native'
-              puts 'Native musl backend loaded successfully'
-            rescue LoadError => e
-              puts 'ERROR: Native backend failed to load on musl'
-              puts e.message
-              exit 1
+              require 'throttle_machines_native/throttle_machines_native'
+            rescue NameError
+              puts 'Native musl extension linked and initialised'
             end
           "
 

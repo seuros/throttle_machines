@@ -13,7 +13,7 @@ class MiddlewareTest < ActionDispatch::IntegrationTest
 
   test 'middleware is installed and working' do
     # Configure a very low limit
-    ThrottleMachines::RackMiddleware.throttle('test', limit: 2, period: 60, &:ip)
+    ThrottleMachines::RackMiddleware.throttle('test', limit: 2, period: 60 * ThrottleMachines::NS_PER_SECOND, &:ip)
 
     # First request should work
     get '/health'
@@ -32,7 +32,7 @@ class MiddlewareTest < ActionDispatch::IntegrationTest
   end
 
   test 'rate limiting headers are present' do
-    ThrottleMachines::RackMiddleware.throttle('test', limit: 10, period: 60, &:ip)
+    ThrottleMachines::RackMiddleware.throttle('test', limit: 10, period: 60 * ThrottleMachines::NS_PER_SECOND, &:ip)
 
     get '/health'
 

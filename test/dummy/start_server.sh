@@ -36,8 +36,8 @@ cleanup() {
 # Trap cleanup function on exit
 trap cleanup SIGINT SIGTERM
 
-# Check if bundle install is needed
-if [ ! -f "Gemfile.lock" ] || [ "Gemfile" -nt "Gemfile.lock" ]; then
+# The dummy app runs on the gem's own bundle (config/boot.rb)
+if ! bundle check > /dev/null 2>&1; then
     echo -e "${YELLOW}Installing/updating gems...${NC}"
     bundle install
 fi

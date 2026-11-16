@@ -5,23 +5,23 @@ class ExternalApiService
   cattr_accessor :test_payment_behavior
 
   def initialize
-    @payment_breaker = ThrottleMachines::Breaker.new('payment_gateway',
-                                                     failure_threshold: 3,
-                                                     reset_timeout: 30)
+    ns = ThrottleMachines::NS_PER_SECOND
+    # Spans in Integer nanoseconds: failures within a minute, then a cooldown.
+    @payment_breaker = BreakerMachines::Circuit.new('payment_gateway',
+                                                    ThrottleMachines::Breakers.policy(3, 60 * ns, 30 * ns))
 
-    @email_breaker = ThrottleMachines::Breaker.new('email_service',
-                                                   failure_threshold: 5,
-                                                   reset_timeout: 60)
+    @email_breaker = BreakerMachines::Circuit.new('email_service',
+                                                  ThrottleMachines::Breakers.policy(5, 60 * ns, 60 * ns))
 
     # Rate limiters for API calls
     @payment_limiter = ThrottleMachines.limiter('payment_api',
                                                 limit: 100,
-                                                period: 60,
+                                                period: 60 * ThrottleMachines::NS_PER_SECOND,
                                                 algorithm: :gcra)
 
     @email_limiter = ThrottleMachines.limiter('email_api',
                                               limit: 1000,
-                                              period: 60)
+                                              period: 60 * ThrottleMachines::NS_PER_SECOND)
   end
 
   def circuit(name)
@@ -37,11 +37,11 @@ class ExternalApiService
 
   def process_payment(amount, _card_token)
     # Check rate limit first
-    unless @payment_limiter.allowed?
+    unless @payment_limiter.allow?
       return {
         status: 'rate_limited',
         message: 'Too many payment requests',
-        retry_after: @payment_limiter.ttl
+        retry_after: @payment_limiter.retry_after
       }
     end
 
@@ -71,11 +71,11 @@ class ExternalApiService
   end
 
   def send_notification(_email, _subject, _body)
-    unless @email_limiter.allowed?
+    unless @email_limiter.allow?
       return {
         sent: false,
         error: 'Rate limited',
-        retry_after: @email_limiter.ttl
+        retry_after: @email_limiter.retry_after
       }
     end
 

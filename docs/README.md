@@ -67,7 +67,7 @@ Welcome to the ThrottleMachines documentation system. This is your complete guid
 ### 🚀 Advanced Features
 - **[🚀 Advanced Features](ADVANCED_FEATURES.md)** - Next-generation capabilities
   - Cascading circuit breakers
-  - Async/fiber-safe operations  
+  - Async/fiber-safe operations
   - Circuit groups with dependencies
   - Hedged requests for latency reduction
 
@@ -126,7 +126,7 @@ Welcome to the ThrottleMachines documentation system. This is your complete guid
 ThrottleMachines follows the **ultra-thin** design principle:
 
 1. **No bloat** - Every feature has a purpose
-2. **No magic** - Clear, understandable behavior  
+2. **No magic** - Clear, understandable behavior
 3. **No dependencies** - Pure Ruby with optional enhancements
 4. **No compromises** - Performance and precision
 

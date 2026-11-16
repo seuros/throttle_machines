@@ -11,7 +11,8 @@ class SimpleRateLimitTest < ActionDispatch::IntegrationTest
     ThrottleMachines::RackMiddleware.enabled = true
 
     # Configure a simple throttle
-    ThrottleMachines::RackMiddleware.throttle('simple', limit: 3, period: 60) do |_req|
+    ThrottleMachines::RackMiddleware.throttle('simple', limit: 3,
+                                                       period: 60 * ThrottleMachines::NS_PER_SECOND) do |_req|
       'simple_test' # Same key for all requests
     end
   end

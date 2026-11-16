@@ -27,10 +27,13 @@ bundle install
 ```ruby
 require 'throttle_machines'
 
+# Every span is Integer nanoseconds
+NS = ThrottleMachines::NS_PER_SECOND # 1_000_000_000
+
 # Create a simple thruster control
 thruster = ThrottleMachines.limiter("main_thruster",
-  limit: 5,    # 5 burns
-  period: 10   # per 10 seconds
+  limit: 5,        # 5 burns
+  period: 10 * NS  # per 10 seconds
 )
 
 # Fire the thrusters! (Check and consume pattern)
@@ -48,7 +51,7 @@ if thruster.allow?
   thruster.throttle!
   puts "🔥 Thruster fired!"
 else
-  puts "❌ Thruster exhausted! Wait #{thruster.retry_after} seconds for cooldown."
+  puts "❌ Thruster exhausted! Wait #{thruster.retry_after.ceildiv(NS)}s for cooldown."
 end
 
 # Alternative: Exception-based pattern
@@ -56,7 +59,7 @@ begin
   thruster.throttle!
   puts "🔥 Emergency thruster fired!"
 rescue ThrottleMachines::ThrottledError => e
-  puts "❌ Thruster locked! Retry after #{e.limiter.retry_after} seconds"
+  puts "❌ Thruster locked! Retry after #{e.retry_after} ns"
 end
 ```
 
@@ -76,7 +79,11 @@ end
 - Checks AND consumes one unit from your limit
 - Raises `ThrottledError` if over limit
 - Use this when you actually perform the action
-- Returns nil on success
+- Takes an optional block and returns its value (nil without one)
+
+**`retry_after`** - The Countdown
+- Integer nanoseconds until the next call is admitted (zero when one is now)
+- Divide with `ceildiv(NS)` only when a human (or a `Retry-After` header) wants seconds
 
 ### Usage Patterns
 
@@ -92,11 +99,11 @@ begin
   limiter.throttle!
   perform_action
 rescue ThrottleMachines::ThrottledError => e
-  handle_rate_limit(e.limiter.retry_after)
+  handle_rate_limit(e.retry_after) # Integer nanoseconds
 end
 
 # Pattern 3: Block form (automatic)
-ThrottleMachines.limit("action", limit: 10, period: 60) do
+ThrottleMachines.limit("action", limit: 10, period: 60 * NS) do
   perform_action  # Automatically throttled
 end
 ```
@@ -105,7 +112,7 @@ end
 
 ## 🛸 Understanding Your Fleet
 
-ThrottleMachines provides different spacecraft (algorithms) for different missions:
+ThrottleMachines provides three spacecraft (algorithms) for different missions. Without `algorithm:`, a limiter flies `config.default_algorithm` (`:fixed_window` out of the box):
 
 ### 1. **Fixed Window Shuttle** - The Reliable Workhorse
 ```ruby
@@ -113,7 +120,7 @@ ThrottleMachines provides different spacecraft (algorithms) for different missio
 # Resets completely at window boundaries
 shuttle = ThrottleMachines.limiter("cargo_shuttle",
   limit: 100,
-  period: 3600,  # 1 hour windows
+  period: 3600 * NS,  # 1 hour windows
   algorithm: :fixed_window
 )
 ```
@@ -124,7 +131,7 @@ shuttle = ThrottleMachines.limiter("cargo_shuttle",
 # Like a cargo ship that refills its hold gradually
 freighter = ThrottleMachines.limiter("supply_freighter",
   limit: 50,
-  period: 60,
+  period: 60 * NS,
   algorithm: :token_bucket
 )
 ```
@@ -135,22 +142,14 @@ freighter = ThrottleMachines.limiter("supply_freighter",
 # Like a diplomatic ship that never causes traffic jams
 diplomat = ThrottleMachines.limiter("federation_diplomat",
   limit: 1000,
-  period: 60,
+  period: 60 * NS,
   algorithm: :gcra
 )
 ```
 **Best for**: API rate limiting, preventing thundering herds
 
-### 4. **Sliding Window Scout** - The Precision Navigator
-```ruby
-# Like a scout ship tracking exact movements
-scout = ThrottleMachines.limiter("recon_scout",
-  limit: 20,
-  period: 60,
-  algorithm: :sliding_window
-)
-```
-**Best for**: Precise rate limiting, real-time systems
+> **Decommissioned: the Sliding Window Scout.** `:sliding_window` is no longer in the fleet;
+> asking for it raises `RangeError`. For precise, even spacing, fly the GCRA vessel.
 
 ---
 
@@ -161,17 +160,17 @@ scout = ThrottleMachines.limiter("recon_scout",
 def fire_photon_torpedo(target)
   torpedo_bay = ThrottleMachines.limiter("photon_torpedoes",
     limit: 6,
-    period: 30
+    period: 30 * NS
   )
 
-  if torpedo_bay.allowed?
+  torpedo_bay.throttle! do
     # Fire!
     launch_torpedo_at(target)
     { status: :fired, target: target }
-  else
-    # Tactical retreat
-    { status: :recharging, retry_after: torpedo_bay.retry_after }
   end
+rescue ThrottleMachines::ThrottledError => e
+  # Tactical retreat
+  { status: :recharging, retry_after: e.retry_after } # Integer nanoseconds
 end
 ```
 
@@ -180,20 +179,22 @@ end
 class SpaceStation
   def initialize
     @limiters = {
-      docking_bay: ThrottleMachines.limiter("docking", limit: 10, period: 300),
-      communications: ThrottleMachines.limiter("comms", limit: 100, period: 60),
-      transporters: ThrottleMachines.limiter("transport", limit: 20, period: 60)
+      docking_bay: ThrottleMachines.limiter("docking", limit: 10, period: 300 * NS),
+      communications: ThrottleMachines.limiter("comms", limit: 100, period: 60 * NS),
+      transporters: ThrottleMachines.limiter("transport", limit: 20, period: 60 * NS)
     }
   end
 
   def request_docking(ship_id)
-    return { error: "Docking bay full" } unless @limiters[:docking_bay].allowed?
-    dock_ship(ship_id)
+    @limiters[:docking_bay].throttle! { dock_ship(ship_id) }
+  rescue ThrottleMachines::ThrottledError
+    { error: "Docking bay full" }
   end
 
   def send_transmission(message)
-    return { error: "Comms overloaded" } unless @limiters[:communications].allowed?
-    transmit(message)
+    @limiters[:communications].throttle! { transmit(message) }
+  rescue ThrottleMachines::ThrottledError
+    { error: "Comms overloaded" }
   end
 end
 ```
@@ -204,23 +205,21 @@ end
 class AICore
   def initialize
     @limiter = ThrottleMachines.limiter("ai_core",
-      limit: 100,      # 100 requests
-      period: 3600,    # per hour
-      algorithm: :gcra # Smooth distribution
+      limit: 100,         # 100 requests
+      period: 3600 * NS,  # per hour
+      algorithm: :gcra    # Smooth distribution
     )
   end
 
   def process_request(query)
-    unless @limiter.allowed?
-      return {
-        error: "AI core at capacity",
-        retry_after: @limiter.retry_after,
-        suggestion: "Try again in #{@limiter.retry_after} seconds"
-      }
-    end
-
     # Process the AI request
-    run_ai_inference(query)
+    @limiter.throttle! { run_ai_inference(query) }
+  rescue ThrottleMachines::ThrottledError => e
+    {
+      error: "AI core at capacity",
+      retry_after: e.retry_after, # Integer nanoseconds
+      suggestion: "Try again in #{e.retry_after.ceildiv(NS)} seconds"
+    }
   end
 end
 ```
@@ -229,9 +228,9 @@ end
 
 ## 🎯 Mission Objectives Achieved
 
-✅ Launched your first rate limiter  
-✅ Understood the spacecraft types (algorithms)  
-✅ Learned basic command patterns  
+✅ Launched your first rate limiter
+✅ Understood the spacecraft types (algorithms)
+✅ Learned basic command patterns
 
 ---
 

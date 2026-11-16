@@ -78,7 +78,7 @@ The Apache Bench script runs several test scenarios:
 - **Test**: 15 sequential requests
 - **Expected**: First 10 succeed, remaining 5 are rate limited
 
-### 2. API Endpoint Test  
+### 2. API Endpoint Test
 - **Target**: `/api/rate_limit_test` (5 req/min limit)
 - **Test**: 8 sequential requests
 - **Expected**: Rate limiting kicks in quickly

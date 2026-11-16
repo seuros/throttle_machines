@@ -9,6 +9,9 @@ module ThrottleMachines
       super("Rate limit exceeded for #{limiter.key}")
     end
 
-    delegate :retry_after, to: :@limiter
+    # Integer nanoseconds until the limiter admits a call, asked now.
+    def retry_after
+      @limiter.retry_after
+    end
   end
 end

@@ -40,15 +40,15 @@ module ThrottleMachines
     def test_limiter_rejects_unsupported_algorithms_on_construction
       storage = FixedWindowOnly.new
 
-      Limiter.new('api', limit: 1, period: 60, storage: storage).throttle!
-      error = assert_raises(ArgumentError) do
-        Limiter.new('api', limit: 1, period: 60, algorithm: :gcra, storage: storage)
+      Limiter.new('api', limit: 1, period: 60 * NS, storage: storage).throttle!
+      error = assert_raises(RangeError) do
+        Limiter.new('api', limit: 1, period: 60 * NS, algorithm: :gcra, storage: storage)
       end
       assert_match(/FixedWindowOnly does not support the :gcra algorithm/, error.message)
     end
 
     def test_limiter_rejects_unknown_algorithms_on_construction
-      assert_raises(ArgumentError) { Limiter.new('api', limit: 1, period: 60, algorithm: :sliding_log) }
+      assert_raises(RangeError) { Limiter.new('api', limit: 1, period: 60 * NS, algorithm: :sliding_log) }
     end
 
     def test_health_probe_needs_only_fixed_window
@@ -57,8 +57,16 @@ module ThrottleMachines
     end
 
     def test_unimplemented_operations_name_the_backend
-      error = assert_raises(NotImplementedError) { FixedWindowOnly.new.check_gcra_limit('api', 1.0, 0, 60) }
-      assert_match(/FixedWindowOnly does not implement #check_gcra_limit/, error.message)
+      policy = GcraPolicy.new(NS, 0)
+      error = assert_raises(NotImplementedError) { FixedWindowOnly.new.check_gcra('api', policy, 60 * NS) }
+      assert_match(/FixedWindowOnly does not implement #check_gcra/, error.message)
+    end
+
+    def test_limiter_rejects_a_period_or_limit_that_is_not_a_positive_integer
+      assert_raises(TypeError) { Limiter.new('api', limit: 1, period: 1.5) }
+      assert_raises(TypeError) { Limiter.new('api', limit: '1', period: NS) }
+      assert_raises(RangeError) { Limiter.new('api', limit: 1, period: 0) }
+      assert_raises(RangeError) { Limiter.new('api', limit: -1, period: NS) }
     end
   end
 end

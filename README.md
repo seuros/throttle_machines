@@ -45,6 +45,20 @@ bundle install
 
 ---
 
+## 🕰️ Ship's Clock
+
+Every instant and span is **Integer nanoseconds**: periods, windows, TTLs,
+`retry_after`, deadlines. `ThrottleMachines.monotonic_time` reads
+`Process.clock_gettime(Process::CLOCK_MONOTONIC, :nanosecond)`. No floats, no
+seconds; HTTP `Retry-After` headers are the one place a wait becomes whole
+seconds, rounded up.
+
+```ruby
+NS = ThrottleMachines::NS_PER_SECOND # 1_000_000_000
+```
+
+---
+
 ## 🎯 Quick Mission Brief
 
 ### Basic Throttling - The Photon Torpedo Approach
@@ -52,8 +66,8 @@ bundle install
 ```ruby
 # Simple rate limiting - like controlling photon torpedo launches
 torpedo_limiter = ThrottleMachines.limiter("photon_launcher",
-  limit: 10,     # 10 torpedoes
-  period: 60     # per minute
+  limit: 10,       # 10 torpedoes
+  period: 60 * NS  # per minute
 )
 
 # Check and consume approach
@@ -69,7 +83,7 @@ begin
   torpedo_limiter.throttle!
   launch_torpedo!
 rescue ThrottleMachines::ThrottledError => e
-  puts "Torpedo bay recharging... Retry after #{e.limiter.retry_after} seconds"
+  puts "Torpedo bay recharging... Retry after #{e.retry_after} ns"
 end
 ```
 
@@ -80,7 +94,7 @@ end
 # Instead of sudden stops, it gracefully manages flow
 diplomatic_limiter = ThrottleMachines.limiter("federation_embassy",
   limit: 100,
-  period: 60,
+  period: 60 * NS,
   algorithm: :gcra  # Generic Cell Rate Algorithm
 )
 
@@ -92,10 +106,54 @@ diplomatic_limiter = ThrottleMachines.limiter("federation_embassy",
 ```ruby
 # Use the block form for automatic throttling
 # This handles the throttle! and error handling for you
-ThrottleMachines.limit("warp_drive", limit: 5, period: 60) do
+ThrottleMachines.limit("warp_drive", limit: 5, period: 60 * NS) do
   engage_warp_drive!  # This will be throttled automatically
 end
 # Raises ThrottledError if limit exceeded
+```
+
+### The Reactor Core - Native Gates 🔩
+
+Under every limiter sits a `no_std` Rust core. Its gates are yours to drive
+directly, on a clock you supply. Policies are frozen `Data` values validated
+by the core (`TypeError` for the wrong type, `RangeError` for a value it
+refuses); a gate answers exactly how many more calls it would admit at that
+instant, or a refusal Symbol, which changes nothing: `:throttled`, or for
+GCRA `:overflow` when an admission would push its TAT past the largest
+instant (`(2**64 * 10**9) - 1` nanoseconds; `retry_after` then answers that
+instant: never). A `GcraPolicy` whose burst ceiling holds more than
+`2**64 - 1` emission intervals is a `RangeError`. `now` is read over that
+whole range, so every instant a gate returns (a GCRA `tat` can pass
+`2**64 - 1`) reads back.
+
+```ruby
+policy = ThrottleMachines::GcraPolicy.per(1 * NS, 10, 3) # 10/s, bursts of 3
+gate = ThrottleMachines::Gcra.new(policy)
+now = ThrottleMachines.monotonic_time
+
+gate.check(now)       # => 2, then 1, then 0
+gate.check(now)       # => :throttled (after the burst)
+gate.retry_after(now) # => 100_000_000
+gate.peek(now)        # non-consuming; gate.refund gives one back
+
+bucket = ThrottleMachines::TokenBucket.new(ThrottleMachines::TokenBucketPolicy.new(5, 200_000_000))
+window = ThrottleMachines::FixedWindow.new(ThrottleMachines::FixedWindowPolicy.new(60 * NS, 100))
+```
+
+State kept elsewhere resumes with `Gcra.restored(policy, tat)`,
+`TokenBucket.restored(policy, tokens, refilled_at)` and
+`FixedWindow.restored(policy, count, window_start)`.
+
+### Retries and Breakers 🛡️
+
+```ruby
+backoff = ChronoMachines::Exponential.new(100_000_000, 2.0, 5 * NS, 1.0)
+
+ThrottleMachines.control("hyperspace_relay") do
+  limit rate: 10, per: 1 * NS
+  break_on failures: 5, within: 60 * NS
+  retry_on_failure backoff, 3
+end.call { relay.transmit! }
 ```
 
 ---
@@ -103,26 +161,32 @@ end
 ## Bounded in-memory storage
 
 The memory backend tracks at most **65536 entries**, shared across fixed-window
-counters, GCRA states, and token buckets, including when native speedups are loaded.
+counters, GCRA states, and token buckets.
 
 ```ruby
 ThrottleMachines.storage = ThrottleMachines::Storage::Memory.new(max_keys: 10_000)
 ```
 
 When full, expired entries are reclaimed before admission. If no slot is
-available, new identities are throttled; active identities are never evicted
+available, new identities are refused with `:full`; active identities are never evicted
 to make room and can continue under their existing limits. Peeks also fail
 closed for untrackable identities. Capacity refusals use a one-second retry
 hint, not a reservation. At saturation, on-demand expiry scans run at most
 once per second, even with `auto_cleanup: false`.
 
-`max_keys` must be a non-negative integer; zero denies all identities. For
+`max_keys` must be a non-negative Integer; zero denies all identities. For
 direct storage callers, an untrackable fixed-window counter reads/increments
-as `Float::INFINITY` so it cannot pass a finite rate limit.
+as `Storage::Base::UNTRACKED` (2**64) so it cannot pass a rate limit.
 
 This bounds entry count, not bytes: also bound untrusted identity lengths.
 Redis storage uses TTLs but has no application-level key cap; configure Redis
 memory limits separately. Evicting active Redis keys can reset their limits.
+Redis scripts read `now` from the server (`TIME`, whole microseconds, turned
+into nanoseconds), so processes on any number of hosts can share one Redis
+store; a step in the Redis host's clock is a step for every limit. Stored
+instants count from a `TIME` second kept beside them and are rebased on each
+write, which keeps the scripts' double arithmetic exact. GCRA state is a hash:
+clear throttle keys written by a release that passed the caller's clock.
 
 ---
 
@@ -144,7 +208,7 @@ first requests.
 
 It supports `:fixed_window` only; the cache API has no atomic read-modify-write
 for GCRA or token buckets. A limiter built with an algorithm its storage lacks
-raises `ArgumentError` on construction, for custom backends too.
+raises `RangeError` on construction, for custom backends too.
 
 When the store fails to count (an outage, `NullStore`), requests are admitted.
 Pass `fail_closed: true` to throttle them instead. `clear` deletes only this
@@ -159,19 +223,19 @@ with `Limiter#reset!`.
 Like the best spacecraft, ThrottleMachines follows the principle of **ultra-thin design**:
 
 - **No bloat** - Every component serves a critical function
-- **No dependencies** - Operates in deep space without supply lines
-- **Pure Ruby propulsion** - No alien technology required
+- **Rust reactor core** - `no_std`, allocation-free, no clock of its own
+- **Exact time** - Integer nanoseconds end to end; no float drift at the boundaries
 - **Modular systems** - Swap components like ship modules
 
 ---
 
 ## ⚡ Warp Factor Features
 
-- **🚀 Multiple Algorithms** - GCRA, Token Bucket, Fixed Window, Sliding Window
+- **🚀 Multiple Algorithms** - GCRA, Token Bucket, Fixed Window
 - **💫 Distributed Ready** - Redis backend for fleet coordination
 - **🔄 Async Support** - Fiber-safe operations for quantum communications
 - **🏃 Hedged Requests** - Multi-path navigation for reduced latency
-- **🎯 Microsecond Precision** - Navigate the cosmos with temporal accuracy
+- **🎯 Nanosecond Precision** - Navigate the cosmos with temporal accuracy
 - **🔌 Pluggable Storage** - Memory crystals or Redis quantum storage
 - **🌍 Rails Integration** - Seamless planetary docking procedures
 - **📡 Rack Middleware** - Universal translator for all spacecraft
@@ -214,6 +278,17 @@ See our [Mission Archives](CHANGELOG.md) for the full history of our voyages.
 Found a breach in the hull? Encountered an unknown anomaly?
 - **Emergency beacon**: [GitHub Issues](https://github.com/seuros/throttle_machines/issues)
 - **Mission reports**: [Discussions](https://github.com/seuros/throttle_machines/discussions)
+
+---
+
+## 📡 Credits
+
+**AMS Turner**, NCC-1986, *Turner*-class escort.
+
+Named for Jonathan Turner's *New Directions in Communications* (1986), which
+proposed the leaky bucket: let traffic drain at a fixed rate with a bounded
+allowance for bursts. GCRA, the algorithm this gem's middleware and controller
+helpers default to, is that leaky bucket kept as one theoretical arrival time.
 
 ---
 

@@ -1,24 +1,28 @@
+-- Token bucket peek, the native core's arithmetic in Integer nanoseconds,
+-- on the server's TIME (see token_bucket.lua for how instants are stored).
+-- ARGV: capacity, refill_every.
+-- Reply: {1, tokens available, 0} or {0, 0, nanoseconds until one is}.
 local key = KEYS[1]
 local capacity = tonumber(ARGV[1])
-local refill_rate = tonumber(ARGV[2])
-local now = tonumber(ARGV[3])
+local refill = tonumber(ARGV[2])
 
-local bucket = redis.call('HMGET', key, 'tokens', 'last_refill')
-local tokens = tonumber(bucket[1]) or capacity
-local last_refill = tonumber(bucket[2]) or now
+local time = redis.call('TIME')
+local second = tonumber(time[1])
+local bucket = redis.call('HMGET', key, 'tokens', 'refilled_at', 'epoch')
+local now = (second - (tonumber(bucket[3]) or second)) * 1000000000 + tonumber(time[2]) * 1000
 
--- Calculate tokens without modifying
-local elapsed = now - last_refill
-local tokens_to_add = elapsed * refill_rate
-tokens = math.min(tokens + tokens_to_add, capacity)
+local tokens = math.min(tonumber(bucket[1]) or capacity, capacity)
+local refilled_at = tonumber(bucket[2]) or 0
 
--- `elapsed` carries the clock's rounding; a token due exactly now may come
--- out a hair short of 1. The slack scales with the clock, as in the native core.
-local slack = 2.220446049250313e-16 * 64 * math.max(math.abs(now), 1) * refill_rate
-local allow = tokens >= 1 - slack
--- Admitted: tokens left after this request. Refused: the fractional balance,
--- which retry_after is computed from.
-local tokens_after = allow and math.max(tokens - 1, 0) or tokens
+local earned = math.floor(math.max(now - refilled_at, 0) / refill)
+if tokens + earned >= capacity then
+  return { 1, capacity, 0 }
+end
 
--- Redis truncates Lua numbers in replies to integers; send the count as text.
-return { allow and 1 or 0, string.format('%.17g', tokens_after) }
+tokens = tokens + earned
+if tokens >= 1 then
+  return { 1, tokens, 0 }
+end
+
+refilled_at = refilled_at + earned * refill
+return { 0, 0, string.format('%.0f', math.max(refilled_at + refill - now, 0)) }

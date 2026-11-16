@@ -2,6 +2,8 @@
 
 module ThrottleMachines
   module Storage
+    # Fixed windows in an ActiveSupport cache, aligned to the wall-clock
+    # epoch so every process sharing the cache counts the same window.
     class Cache < Base
       # The wildcard a caller's pattern keeps; everything else is a literal.
       PATTERN_SPECIALS = /[?\[\]\\]/
@@ -16,14 +18,16 @@ module ThrottleMachines
       end
 
       def increment_counter(key, window, amount = 1)
-        count = @cache.increment(window_key(key, window), amount, expires_in: window.to_f.ceil + 1)
-        count || (@fail_closed ? Float::INFINITY : 0)
+        expires_in = window.ceildiv(NS_PER_SECOND) + 1
+        count = @cache.increment(window_key(key, window), amount, expires_in: expires_in)
+        count || (@fail_closed ? UNTRACKED : 0)
       end
 
       def get_counter(key, window)
         @cache.read(window_key(key, window), raw: true).to_i
       end
 
+      # Integer nanoseconds until the current window ends.
       def get_counter_ttl(_key, window)
         window = positive_window(window)
         window - (wall_time % window)
@@ -53,12 +57,12 @@ module ThrottleMachines
 
       def window_key(key, window)
         window = positive_window(window)
-        "#{@prefix}:#{key}:#{window}:#{(wall_time / window).floor}"
+        "#{@prefix}:#{key}:#{window}:#{wall_time / window}"
       end
 
       def positive_window(window)
-        window = window.to_f
-        raise ArgumentError, "window must be positive, got #{window}" unless window.positive?
+        raise TypeError, "window must be an Integer, got #{window.inspect}" unless window.is_a?(Integer)
+        raise RangeError, "window must be positive, got #{window}" unless window.positive?
 
         window
       end
@@ -83,8 +87,10 @@ module ThrottleMachines
         Regexp.new("^#{Regexp.escape(literal)}")
       end
 
+      # Integer nanoseconds since the Unix epoch.
       def wall_time
-        Time.now.to_f
+        now = Time.now
+        (now.to_i * NS_PER_SECOND) + now.nsec
       end
     end
   end

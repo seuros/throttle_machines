@@ -1,6 +1,9 @@
-# BreakerMachines Test Dummy App
+# ThrottleMachines Test Dummy App
 
-This is a minimal Rails API application for testing BreakerMachines circuit breaker functionality.
+A minimal Rails API application that exercises ThrottleMachines end to end:
+`ThrottleMachines::RackMiddleware` rate-limits every request, and the weather and
+payment endpoints run behind the circuit breakers throttle builds on
+(BreakerMachines). It runs on the gem's own bundle and needs no database.
 
 ## Running the App
 
@@ -12,6 +15,22 @@ bundle exec rails server
 ```
 
 ## Endpoints
+
+### Rate-Limited Endpoints
+
+```bash
+# Plain request, counted by the middleware
+curl http://localhost:3000/rate_limit_test
+
+# API path, which the middleware may limit differently
+curl http://localhost:3000/api/rate_limit_test
+
+# Echo the X-RateLimit-* headers the middleware set on this response
+curl -i http://localhost:3000/rate_limit_status
+```
+
+Once a client exceeds its limit the middleware answers `429 Too Many Requests`
+with a whole-second `Retry-After` header.
 
 ### Weather API (Protected by Circuit Breaker)
 
@@ -111,18 +130,17 @@ curl -X POST http://localhost:3000/test/reset
 
 ## Testing
 
-From the gem root:
+The app has no database and runs on the gem's own bundle (`config/boot.rb`
+points `BUNDLE_GEMFILE` at the gem root). From this directory:
 
 ```bash
-bundle exec rails test test/integration/circuit_breaker_test.rb
+bin/rails test
 ```
 
-The test suite demonstrates:
-- Normal operation when circuit is closed
-- Fallback behavior when circuit is open
-- Circuit opening after threshold failures
-- Manual circuit reset
-- Health check functionality
+The suite drives `ThrottleMachines::RackMiddleware` through the app:
+- Requests under a limit pass and the one over it answers 429
+- Different endpoints carry different limits
+- Each IP address has its own budget
 
 ## How It Works
 

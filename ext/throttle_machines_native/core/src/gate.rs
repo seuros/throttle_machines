@@ -1,56 +1,82 @@
-//! The shared admission-gate contract: pure `check`/`peek` over caller-held
-//! state, returning a [`Decision`]. Every rate limiter implements [`Gate`].
+//! The contract every rate limiter honours.
 
-/// Rounding slack, in units of the clock's own precision.
-const SLACK_ULPS: f64 = 64.0;
+use core::num::NonZeroU64;
+use core::time::Duration;
 
-/// Absolute rounding slack for a time comparison at clock reading `t`.
-///
-/// Times are running sums and differences of `f64` seconds, so an on-schedule
-/// arrival can miss an exact boundary by a few ulps. The slack scales with the
-/// clock's magnitude, so epoch-second clocks are covered as well as monotonic
-/// ones (at ~1.7e9 s it is ~24 µs, far below any practical interval at that
-/// precision).
-#[inline]
-pub(crate) fn rounding_slack(t: f64) -> f64 {
-    f64::EPSILON * SLACK_ULPS * t.abs().max(1.0)
-}
+use crate::Refusal;
 
-/// The outcome of an admission decision. `S` is the algorithm's state type;
-/// `state` is the state after the operation.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Decision<S> {
-    /// Whether the call is allowed to proceed.
-    pub allowed: bool,
-    /// The state after this decision.
-    pub state: S,
-    /// Seconds until the next allowed call (0 if allowed).
-    pub retry_after: f64,
-}
-
-/// An admission gate: a pure decision over caller-held state. Implementors are
-/// zero-sized; the caller stores `State` and passes it in each call.
+/// An admission gate over a caller-supplied monotonic clock: `now` is a
+/// [`Duration`] since an epoch the caller picks, the same for every call on
+/// one gate.
 ///
-/// ```
-/// use throttle_machines::gate::{Decision, Gate};
-/// use throttle_machines::gcra::{Gcra, GcraParams};
-///
-/// fn admit<G: Gate>(state: G::State, now: f64, params: G::Params) -> Decision<G::State> {
-///     G::check(state, now, params)
-/// }
-///
-/// let params = GcraParams { emission_interval: 0.1, delay_tolerance: 0.0 };
-/// assert!(admit::<Gcra>(0.0, 1.0, params).allowed);
-/// ```
+/// A gate reads no clock and keeps no history beyond its own state. Calls at
+/// an earlier `now` than an earlier call are answered, never refused for it:
+/// each algorithm is at least as strict at an earlier instant as at a later
+/// one, so a regressed clock can delay admissions but never grant extra ones.
 pub trait Gate {
-    /// The caller-held state this gate operates over.
-    type State: Copy;
-    /// The configuration that parameterizes the decision.
-    type Params: Copy;
+    /// Admit one call at `now`. Honoured: how many more calls the gate would
+    /// admit at the same instant, exactly. A refusal changes nothing.
+    ///
+    /// # Errors
+    ///
+    /// [`Refusal::Throttled`] when the limit is spent at `now`;
+    /// [`Refusal::Overflow`] (GCRA only) when admitting would push the TAT
+    /// past `Duration::MAX`.
+    fn check(&mut self, now: Duration) -> Result<u64, Refusal>;
 
-    /// The consuming admission decision.
-    fn check(state: Self::State, now: f64, params: Self::Params) -> Decision<Self::State>;
+    /// How many calls [`check`](Self::check) would admit back to back at
+    /// `now`, exactly, at least one, without consuming any.
+    ///
+    /// # Errors
+    ///
+    /// The refusal `check` would answer at `now`.
+    fn peek(&self, now: Duration) -> Result<u64, Refusal>;
 
-    /// Observe the decision without consuming.
-    fn peek(state: Self::State, now: f64, params: Self::Params) -> Decision<Self::State>;
+    /// How long after `now` the next call is admitted; zero when one is
+    /// admitted at `now`, and `Duration::MAX` when none is at any instant a
+    /// `Duration` can hold.
+    fn retry_after(&self, now: Duration) -> Duration;
+
+    /// Give back one admission `check` granted, for a call admitted only when
+    /// every gate it spends admits it. Refunding an admission never granted
+    /// grants capacity never earned, up to a fresh gate's.
+    fn refund(&mut self);
+}
+
+/// `span * count`, or `None` past `Duration::MAX`.
+pub fn times(span: Duration, count: u128) -> Option<Duration> {
+    nanos(span.as_nanos().checked_mul(count)?)
+}
+
+/// How many whole `span`s fit in `total`. `span` is never zero: the policies
+/// that hold one refuse it.
+pub fn fits(total: Duration, span: Duration) -> u128 {
+    total.as_nanos().checked_div(span.as_nanos()).unwrap_or(0)
+}
+
+/// `total / count`, rounded up, so a rate built from it never exceeds the
+/// `count` per `total` asked for. `None` for a zero `total`.
+pub fn share(total: Duration, count: NonZeroU64) -> Option<Duration> {
+    let share = total.as_nanos().div_ceil(u128::from(count.get()));
+    if share == 0 {
+        return None;
+    }
+    nanos(share)
+}
+
+/// A count already bounded by a `u64` (a policy's capacity, the tokens
+/// held), as the `u64` a gate answers.
+pub fn count(value: u128) -> u64 {
+    u64::try_from(value).unwrap_or_else(|_| {
+        debug_assert!(false, "a count past the u64 bound its policy proved");
+        u64::MAX
+    })
+}
+
+fn nanos(value: u128) -> Option<Duration> {
+    const PER_SECOND: u128 = 1_000_000_000;
+    let seconds = u64::try_from(value / PER_SECOND).ok()?;
+    // The remainder is below a billion, so it fits.
+    let rest = u32::try_from(value % PER_SECOND).ok()?;
+    Some(Duration::new(seconds, rest))
 }

@@ -53,8 +53,8 @@ class TestController < ApplicationController
     email_circuit = service.circuit(:email_service)
 
     # Reset the breakers
-    payment_circuit.reset!
-    email_circuit.reset!
+    payment_circuit.reset
+    email_circuit.reset
 
     render json: {
       message: 'Circuits reset',

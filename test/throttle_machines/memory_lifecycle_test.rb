@@ -8,7 +8,7 @@ module ThrottleMachines
     ALLOCATIONS_PER_PASS = 10_000
     SETTLE_TIMEOUT = 5.0
     POLL_INTERVAL = 0.01
-    SWEEP_INTERVAL = 0.01
+    SWEEP_INTERVAL = 10 * MS
     DROPPED_STORES = 20
 
     # `shutdown` kills the worker itself and undefines the finalizer, so the

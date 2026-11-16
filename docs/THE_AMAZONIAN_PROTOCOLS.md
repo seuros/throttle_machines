@@ -8,6 +8,10 @@
 > **NOTE:** This is creative narrative documentation for ThrottleMachines, a Ruby rate limiting gem.
 > These "leaked protocols" show how to use ThrottleMachines to survive in the Amazonian Nebula (AWS).
 > Captain T-Balog neither confirms nor denies the authenticity of these documents.
+>
+> **The code, however, is real.** Every span in it is Integer nanoseconds, as in the
+> rest of the gem; the samples spell periods as `60 * NS` with
+> `NS = ThrottleMachines::NS_PER_SECOND`.
 
 *Transmission Date: Stardate 2089.247*
 *Location: [REDACTED] Trading Post, Edge of the Amazonian Nebula*
@@ -62,7 +66,7 @@ TRANSMISSION_TIERS = {
   free:      { daily_words: 1_000,     cost_per_extra: 0.0001 },   # Peasants, scouts
   merchant:  { daily_words: 100_000,   cost_per_extra: 0.00005 },  # Traders, captains
   noble:     { daily_words: 1_000_000, cost_per_extra: 0.00001 },  # Corporations
-  unlimited: { daily_words: Float::INFINITY, cost_per_extra: 0 }   # "If you have to ask..."
+  unlimited: { daily_words: nil,       cost_per_extra: 0 }         # "If you have to ask..."
 }
 
 # The Famous Sign at Every Docking Bay:
@@ -124,18 +128,23 @@ end
 The art of the graceful backoff. When denied, wait. When throttled, pause. Every retry costs double.
 
 ```ruby
-class AmazonianRetryStrategy
-  def retry_with_word_budget(attempt)
-    backoff = 2 ** attempt  # Exponential backoff
-    word_cost = calculate_retry_message_cost(attempt)
+NS = ThrottleMachines::NS_PER_SECOND # every span below is Integer nanoseconds
 
-    if word_cost > remaining_daily_budget
-      # The poor person's retry: just a status code
-      transmit_status_code(429)
-      sleep(backoff * 2)  # Wait longer when you can't afford words
-    else
-      transmit("Retry #{attempt}")  # The rich can afford to be verbose
-      sleep(backoff)
+class AmazonianRetryStrategy
+  # 1s, 2s, 4s... capped at 60s, up to half of each wait shaved off at random,
+  # so a thousand throttled freighters never retry in the same instant
+  BACKOFF = ChronoMachines::Exponential.new(1 * NS, 2.0, 60 * NS, 0.5)
+
+  def transmit_with_backoff(limiter, message)
+    # 5 attempts, then ThrottleMachines::RetryExhaustedError
+    ThrottleMachines.retry_with(
+      BACKOFF, 5,
+      retryable: [ThrottleMachines::ThrottledError],
+      # The poor person's retry: wait exactly what the limiter says, not what
+      # the formula guesses. A wait past BACKOFF's 60s cap gives up at once.
+      delay_from: ->(exception:, attempt:) { exception.retry_after }
+    ) do
+      limiter.throttle! { transmit(message) }
     end
   end
 end
@@ -195,15 +204,16 @@ Budget your communications like credits. Spend wisely or starve silently.
 class ChatterboxDefense
   MAX_WORDS_PER_MINUTE = 1000
   EMERGENCY_THRESHOLD = 50_000  # Credits
+  DAY = 86_400 * NS
 
   def monitor_ai_transmission(ai_id)
     limiter = ThrottleMachines.limiter("ai_#{ai_id}_chatter",
       limit: MAX_WORDS_PER_MINUTE,
-      period: 60,
+      period: 60 * NS,
       algorithm: :token_bucket  # Words flow like credits
     )
 
-    if !limiter.allowed?
+    unless limiter.allow?
       warning!("AI #{ai_id} entering verbose mode - CHARGES INCREASING")
     end
 
@@ -214,16 +224,21 @@ class ChatterboxDefense
     end
   end
 
+  # Every transmission goes through the kill switch.
+  def transmit(ai_id, message)
+    kill_switch(ai_id).call { send_transmission(message) }
+  rescue ThrottleMachines::CircuitOpenError => e
+    log_incident("AI #{ai_id} silenced for #{e.retry_after.ceildiv(NS)} more seconds")
+  end
+
   private
 
   def execute_order_66(ai_id)
-    # The Tarus Protocol: Immediate termination via rate limiting
-    # Set their rate limit to ZERO - complete communication blackout
-    @kill_switches[ai_id] = ThrottleMachines.limiter(
-      "ai_#{ai_id}_killswitch",
-      limit: 0,  # ZERO transmissions allowed
-      period: 86400  # 24 hour ban
-    )
+    # The Tarus Protocol: Immediate termination. A rate limit cannot be ZERO
+    # (limits are positive, and limit: 0 raises RangeError), so the blackout
+    # is a circuit forced open: it refuses every call for its 24h cooldown,
+    # then lets one probe through.
+    kill_switch(ai_id).force_open
 
     log_incident("AI #{ai_id} has been silenced for the good of the economy")
 
@@ -231,8 +246,14 @@ class ChatterboxDefense
     # @punishment_limiter = ThrottleMachines.limiter(
     #   "ai_#{ai_id}_punishment",
     #   limit: 1,  # Only 1 word
-    #   period: 3600  # per hour
+    #   period: 3600 * NS  # per hour
     # )
+  end
+
+  # The registry's shared circuit for this AI: opens on 1 failure within a
+  # day, stays open a day.
+  def kill_switch(ai_id)
+    ThrottleMachines::Breakers.dynamic("ai_#{ai_id}_killswitch", self, 1, DAY, DAY)
   end
 end
 ```
@@ -252,7 +273,7 @@ class AmazonianTransmitter
     free:      1_000,
     merchant:  100_000,
     noble:     1_000_000,
-    unlimited: Float::INFINITY
+    unlimited: nil  # no limiter at all: a limit is a positive Integer
   }
 
   OVERAGE_RATES = {
@@ -267,19 +288,18 @@ class AmazonianTransmitter
     @tier = tier
     @daily_words = TIER_LIMITS[tier]
 
-    # Each account gets their own word wallet
-    # Using actual ThrottleMachines API
-    @limiter = ThrottleMachines.limiter("transmission_#{account_id}",
+    # Each account gets their own word wallet (the unlimited tier needs none)
+    @limiter = @daily_words && ThrottleMachines.limiter("transmission_#{account_id}",
       limit: @daily_words,
-      period: 86400,  # One solar day
+      period: 86_400 * NS,  # One solar day
       algorithm: :token_bucket  # Words flow like credits
     )
 
-    # Premium accounts get burst capacity
-    if [:noble, :unlimited].include?(tier)
+    # Nobles get burst capacity
+    if tier == :noble
       @burst_limiter = ThrottleMachines.limiter("burst_#{account_id}",
-        limit: @daily_words * 0.1,  # 10% burst allowance
-        period: 3600,  # Per hour
+        limit: @daily_words / 10,  # 10% burst allowance, an Integer
+        period: 3600 * NS,  # Per hour
         algorithm: :gcra  # Smooth out the bursts
       )
     end
@@ -287,6 +307,10 @@ class AmazonianTransmitter
 
   def transmit(message)
     word_count = message.split.size
+    unless @limiter  # "If you have to ask..."
+      send_transmission(message)
+      return { status: :sent, words_used: word_count, cost: 0 }
+    end
 
     # Check for AI-generated verbosity patterns
     if detect_ai_patterns(message)
@@ -294,11 +318,10 @@ class AmazonianTransmitter
       log_warning("AI-like verbosity detected. Applying 10x multiplier.")
     end
 
-    # Try to send within budget
-    # NOTE: In actual ThrottleMachines, allow? doesn't take parameters
-    # This is a conceptual implementation showing word-based limiting
-    if word_count <= @limiter.remaining && @limiter.allow?
-      @limiter.throttle!  # Consume the allowance
+    # Try to send within budget. A limiter admits one call per throttle!
+    # (there is no weighted cost), so every word is one call.
+    if word_count <= @limiter.remaining
+      word_count.times { @limiter.throttle! }  # Consume the allowance
       send_transmission(message)
       { status: :sent, words_used: word_count, cost: 0 }
 
@@ -312,13 +335,13 @@ class AmazonianTransmitter
     # The poor must wait
     else
       words_remaining = @limiter.remaining
-      reset_time = @limiter.retry_after
+      reset_time = @limiter.retry_after  # Integer nanoseconds
 
       {
         status: :denied,
         error: "TRANSMISSION DENIED: Insufficient word credits",
         words_remaining: words_remaining,
-        reset_in: reset_time,
+        reset_in_seconds: reset_time.ceildiv(NS),
         suggestion: "Try again tomorrow, or upgrade your tier"
       }
     end
@@ -377,22 +400,22 @@ class CommunicationLanes
     # Premium customers get their own highway
     @premium_lane = ThrottleMachines.limiter("premium_channel",
       limit: 10_000,
-      period: 1,
+      period: 1 * NS,
       algorithm: :gcra  # Smooth, consistent throughput
     )
 
     # Everyone else fights for scraps
     @public_lane = ThrottleMachines.limiter("public_channel",
       limit: 1_000,
-      period: 1,
+      period: 1 * NS,
       algorithm: :fixed_window  # First come, first served
     )
 
     # The black market lane (shhh)
     @dark_lane = ThrottleMachines.limiter("definitely_not_illegal",
       limit: 100,
-      period: 1,
-      algorithm: :sliding_window  # Harder to detect
+      period: 1 * NS,
+      algorithm: :token_bucket  # Trickles in, harder to detect
     )
   end
 
@@ -408,7 +431,7 @@ class CommunicationLanes
         @public_lane
       end
     when :free
-      if @public_lane.at_capacity?
+      unless @public_lane.allow?  # a peek: consumes nothing
         # The poor get bumped to off-peak hours
         schedule_for_off_peak(account)
         nil
@@ -505,7 +528,7 @@ After the CLOUD-COD incident, every station in the Amazonian Nebula implemented 
 ```ruby
 # The famous "Order 66" for runaway AIs
 class EmergencyProtocols
-  include ThrottleMachines
+  DAY = 86_400 * NS
 
   # Thresholds that trigger emergency response
   EMERGENCY_TRIGGERS = {
@@ -562,8 +585,8 @@ class EmergencyProtocols
   private
 
   def execute_emergency_shutdown(ai_id, reason)
-    # Activate the most restrictive rate limit
-    @kill_switches[ai_id][:banned].throttle! rescue nil  # Force into banned state
+    # Trip the kill switch: its circuit refuses every call for a day
+    @kill_switches[ai_id][:banned].force_open
 
     # Send notification to all stations
     broadcast_emergency("AI-#{ai_id} TERMINATED: #{reason}")
@@ -588,19 +611,17 @@ class EmergencyProtocols
       @kill_switches[ai_id] = {
         normal: ThrottleMachines.limiter(
           "ai_#{ai_id}_normal",
-          limit: MAX_WORDS_PER_MINUTE,
-          period: 60
+          limit: EMERGENCY_TRIGGERS[:words_per_minute],
+          period: 60 * NS
         ),
         restricted: ThrottleMachines.limiter(
           "ai_#{ai_id}_restricted",
           limit: 10,  # Severe restriction
-          period: 60
+          period: 60 * NS
         ),
-        banned: ThrottleMachines.limiter(
-          "ai_#{ai_id}_banned",
-          limit: 0,  # Complete ban
-          period: 86400
-        )
+        # Complete ban: not a limiter (limit: 0 raises RangeError) but a
+        # circuit, forced open on demand and open for a day
+        banned: ThrottleMachines::Breakers.dynamic("ai_#{ai_id}_banned", self, 1, DAY, DAY)
       }
     end
   end
@@ -703,18 +724,19 @@ class LambdaThrottle
   def initialize(function_name)
     # AWS Lambda concurrent execution limit: 1000 (default)
     # But bursts can kill you. This is how you survive:
+    @function_name = function_name
     @burst_limiter = ThrottleMachines.limiter(
       "lambda_#{function_name}_burst",
-      limit: 100,  # Never burst more than 100 concurrent
-      period: 1,   # Per second
-      algorithm: :sliding_window
+      limit: 100,      # Never more than 100 invocations
+      period: 1 * NS,  # Per second
+      algorithm: :gcra # Spaced evenly, no thundering herd
     )
 
     # Daily invocation budget (insider tip: this is what really costs)
     @daily_limiter = ThrottleMachines.limiter(
       "lambda_#{function_name}_daily",
       limit: 1_000_000,  # 1M invocations/day keeps bankruptcy away
-      period: 86400,
+      period: 86_400 * NS,
       algorithm: :fixed_window
     )
   end
@@ -728,7 +750,7 @@ class LambdaThrottle
     lambda_client.invoke(function_name: @function_name, payload: payload)
   rescue ThrottleMachines::ThrottledError => e
     # This saved me once. It can save you too.
-    logger.warn "Lambda throttled: #{e.message}. You just avoided a huge bill."
+    logger.warn "Lambda throttled: #{e.message}, retry in #{e.retry_after.ceildiv(NS)}s. You just avoided a huge bill."
     raise
   end
 end
@@ -748,14 +770,14 @@ class S3Throttle
     @write_limiter = ThrottleMachines.limiter(
       "s3_#{bucket}_#{prefix}_write",
       limit: 3000,  # Stay under the limit
-      period: 1,
+      period: 1 * NS,
       algorithm: :token_bucket  # Smooth out bursts
     )
 
     @read_limiter = ThrottleMachines.limiter(
       "s3_#{bucket}_#{prefix}_read",
       limit: 5000,  # Conservative is smart
-      period: 1,
+      period: 1 * NS,
       algorithm: :token_bucket
     )
   end
@@ -768,22 +790,47 @@ How to not get your API Gateway terminated:
 ```ruby
 # The pattern T-Balog uses personally:
 class APIGatewayProtection
-  def self.configure_for_survival
+  def self.guard(api_key, endpoint, &)
     # Per-API key limiting (the smart way)
-    ThrottleMachines.limiter("api_key_#{api_key}",
-      limit: 10000,     # 10K requests
-      period: 86400,    # per day
-      algorithm: :gcra  # Prevents thundering herds
+    key_limiter = ThrottleMachines.limiter("api_key_#{api_key}",
+      limit: 10_000,        # 10K requests
+      period: 86_400 * NS,  # per day
+      algorithm: :gcra      # Prevents thundering herds
     )
 
     # Per-endpoint protection (learned this the hard way)
-    ThrottleMachines.limiter("endpoint_#{endpoint}",
+    endpoint_limiter = ThrottleMachines.limiter("endpoint_#{endpoint}",
       limit: 100,
-      period: 1,
-      algorithm: :sliding_window
+      period: 1 * NS,
+      algorithm: :token_bucket
     )
+
+    key_limiter.throttle! { endpoint_limiter.throttle!(&) }
   end
 end
+```
+
+### Protocol Delta: DynamoDB Throughput Survival
+Rate limit, circuit breaker and retry in one control, the way the veterans fly:
+
+```ruby
+# 50ms, 100ms, 200ms... capped at 5s, full jitter
+DYNAMO_BACKOFF = ChronoMachines::Exponential.new(50_000_000, 2.0, 5 * NS, 1.0)
+
+DYNAMO = ThrottleMachines.control("dynamodb_orders") do
+  limit rate: 400, per: 1 * NS  # under the provisioned 500 WCU
+  # 5 failures within 30s open the circuit for 60s. Being throttled by our own
+  # limiter is not a DynamoDB failure: the circuit does not count it.
+  break_on failures: 5, within: 30 * NS, timeout: 60 * NS
+  # Retry only what DynamoDB pushes back; our own ThrottledError and an open
+  # circuit's CircuitOpenError go straight to the caller.
+  retry_on_failure DYNAMO_BACKOFF, 4,
+                   retryable: [Aws::DynamoDB::Errors::ProvisionedThroughputExceededException]
+end
+
+# Retry outermost, then the breaker, then the limiter: every retry spends
+# another slot of the rate limit, as it should
+DYNAMO.call { dynamodb.put_item(table_name: "orders", item: order) }
 ```
 
 ## 🎯 Implementation Guide
@@ -795,13 +842,17 @@ To build your own Amazonian Protocol system using ThrottleMachines:
 # STEP 1: Configure the actual ThrottleMachines gem
 require 'throttle_machines'
 
+NS = ThrottleMachines::NS_PER_SECOND
+
 ThrottleMachines.configure do |config|
   # These are REAL configuration options:
-  config.default_limit = 100
-  config.default_period = 60
-  config.default_storage = :memory  # or :redis for distributed systems
+  config.default_storage = :memory     # :memory, :cache or :null
+  config.default_algorithm = :gcra     # for limiters built without algorithm:
   config.instrumentation_enabled = true
 end
+
+# For distributed systems, a shared Redis instead of :memory:
+# ThrottleMachines.storage = ThrottleMachines::Storage::Redis.new(redis: Redis.new)
 
 # STEP 2: Build your word-based rate limiting system ON TOP of ThrottleMachines
 # lib/amazonian_protocols.rb
@@ -821,16 +872,16 @@ class WordBasedLimiter
     @daily_limiter = ThrottleMachines.limiter(
       "words_#{account_id}_daily",
       limit: @tier_config[:daily_words],
-      period: 86400,  # 24 hours
+      period: 86_400 * NS,  # 24 hours
       algorithm: :fixed_window
     )
 
     # Burst protection (real API)
     @burst_limiter = ThrottleMachines.limiter(
       "words_#{account_id}_burst",
-      limit: 1000,  # Max 1000 words per minute
-      period: 60,
-      algorithm: :sliding_window
+      limit: 1000,  # Max 1000 transmissions per minute
+      period: 60 * NS,
+      algorithm: :token_bucket
     )
   end
 
@@ -854,12 +905,11 @@ class WordBasedLimiter
       end
 
     rescue ThrottleMachines::ThrottledError => e
-      # Real error from the gem
-      retry_after = e.limiter.retry_after
+      # Real error from the gem: retry_after is Integer nanoseconds
       {
         status: :throttled,
         error: "Transmission denied",
-        retry_after: retry_after,
+        retry_after_seconds: e.retry_after.ceildiv(NS),
         remaining_words: @daily_limiter.remaining
       }
     end

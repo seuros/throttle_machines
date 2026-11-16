@@ -10,9 +10,9 @@ class WeatherController < ApplicationController
     case name
     when :weather_api
       dynamic_circuit(:weather_api, global: true) do
-        threshold failures: 3, within: 60
-        reset_after 30
-        timeout 5
+        ns = ThrottleMachines::NS_PER_SECOND
+        policy ThrottleMachines::Breakers.policy(3, 60 * ns, 30 * ns)
+        timeout 5 * ns
 
         fallback do |_error|
           {

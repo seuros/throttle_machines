@@ -8,18 +8,26 @@ When your spacecraft (gem) arrives at a new planet (Rails app), you need proper 
 
 ## 🚀 Rails Controller Integration
 
+`ThrottleMachines::ControllerHelpers` is the docking clamp: `throttle!`,
+`with_throttle`, `rate_limited?` and `rate_limit_remaining`. Every `period:` is
+Integer nanoseconds; the 429 body and the `Retry-After` header report the wait
+in whole seconds, rounded up. Without an explicit key, ships are identified as
+`user:<id>` (when `current_user` answers `id`) or `ip:<remote_ip>`.
+
 ### Basic Docking Procedures
 ```ruby
+NS = ThrottleMachines::NS_PER_SECOND # 1_000_000_000
+
 class ApiController < ApplicationController
-  include ThrottleMachines::Rails::Controller
+  include ThrottleMachines::ControllerHelpers
 
   # Establish rate limiting for the entire space station
-  throttle :api_rate_limit,
-    limit: 1000,
-    period: 3600,  # 1000 requests per hour
-    algorithm: :gcra do |request|
+  before_action do
     # Identify ships by their registration (user ID) or origin (IP)
-    current_user&.id || request.remote_ip
+    throttle!("api_rate_limit:#{current_user&.id || request.remote_ip}",
+      limit: 1000,
+      period: 3600 * NS,  # 1000 requests per hour
+      algorithm: :gcra)
   end
 end
 ```
@@ -27,30 +35,27 @@ end
 ### Advanced Planetary Defense System
 ```ruby
 class SpaceStationController < ApplicationController
-  include ThrottleMachines::Rails::Controller
+  include ThrottleMachines::ControllerHelpers
 
   # Different limits for different ship classes
-  throttle :standard_docking,
-    limit: 100,
-    period: 300,  # 100 requests per 5 minutes
-    only: [:index, :show] do |request|
-    identify_ship(request)
+  before_action only: [:index, :show] do
+    throttle!("standard_docking:#{identify_ship}",
+      limit: 100,
+      period: 300 * NS)  # 100 requests per 5 minutes
   end
 
-  throttle :cargo_loading,
-    limit: 10,
-    period: 60,  # 10 heavy operations per minute
-    only: [:create, :update],
-    algorithm: :token_bucket do |request|
-    current_user.id
+  before_action only: [:create, :update] do
+    throttle!("cargo_loading:#{current_user.id}",
+      limit: 10,
+      period: 60 * NS,  # 10 heavy operations per minute
+      algorithm: :token_bucket)
   end
 
-  throttle :emergency_protocol,
-    limit: 1,
-    period: 300,  # 1 emergency call per 5 minutes
-    only: [:emergency_evacuation],
-    algorithm: :fixed_window do |request|
-    "emergency:#{request.remote_ip}"
+  before_action only: [:emergency_evacuation] do
+    throttle!("emergency:#{request.remote_ip}",
+      limit: 1,
+      period: 300 * NS,  # 1 emergency call per 5 minutes
+      algorithm: :fixed_window)
   end
 
   # Actions
@@ -70,7 +75,7 @@ class SpaceStationController < ApplicationController
 
   private
 
-  def identify_ship(request)
+  def identify_ship
     # Authenticated ships get identified by captain
     # Unknown ships identified by origin coordinates
     current_user&.id || "anon:#{request.remote_ip}"
@@ -78,25 +83,25 @@ class SpaceStationController < ApplicationController
 end
 ```
 
+A `throttle!` that renders the 429 halts the `before_action` chain, so the
+action never runs.
+
 ### Conditional Planetary Defenses
 ```ruby
 class ConditionalDefenseController < ApplicationController
-  include ThrottleMachines::Rails::Controller
+  include ThrottleMachines::ControllerHelpers
 
   # Only throttle suspicious activity
-  throttle :suspicious_scanner,
-    limit: 5,
-    period: 60,
-    if: :suspicious_activity? do |request|
-    request.remote_ip
+  before_action if: :suspicious_activity? do
+    throttle!("suspicious_scanner:#{request.remote_ip}", limit: 5, period: 60 * NS)
   end
 
   # Different limits for different user ranks
-  throttle :ranked_access,
-    limit: ->(request) { rate_limit_for_rank },
-    period: 60,
-    algorithm: :gcra do |request|
-    current_user.id
+  before_action do
+    throttle!("ranked_access:#{current_user.id}",
+      limit: rate_limit_for_rank,
+      period: 60 * NS,
+      algorithm: :gcra)
   end
 
   private
@@ -114,7 +119,7 @@ class ConditionalDefenseController < ApplicationController
       10000  # Nearly unlimited
     when "Captain"
       1000   # High limit
-    when "Lieutenant"  
+    when "Lieutenant"
       100    # Standard limit
     else
       10     # Restricted access
@@ -144,15 +149,17 @@ end
 ```ruby
 # config/initializers/throttle_machines.rb
 
+NS = ThrottleMachines::NS_PER_SECOND # 1_000_000_000
+
 # Configure your defensive systems
 ThrottleMachines.configure do |config|
-  # Quantum storage for distributed fleets
-  redis_pool = ConnectionPool.new(size: 10) { Redis.new }
-  config.storage = ThrottleMachines::Storage::Redis.new(pool: redis_pool)
-
   # Default to smooth traffic patterns
   config.default_algorithm = :gcra
 end
+
+# Quantum storage for distributed fleets (a client or a ConnectionPool)
+redis_pool = ConnectionPool.new(size: 10) { Redis.new }
+ThrottleMachines.storage = ThrottleMachines::Storage::Redis.new(redis: redis_pool)
 
 # Defensive Perimeter Configuration
 ThrottleMachines::RackMiddleware.configure do |grid|
@@ -162,7 +169,7 @@ ThrottleMachines::RackMiddleware.configure do |grid|
   # Overall station defense - smooth traffic distribution
   grid.throttle("station_defense",
     limit: 5000,
-    period: 300,  # 5000 requests per 5 minutes
+    period: 300 * NS,  # 5000 requests per 5 minutes
     algorithm: :gcra
   ) do |req|
     req.ip  # Track by origin coordinates
@@ -173,7 +180,7 @@ ThrottleMachines::RackMiddleware.configure do |grid|
   # API dock - higher limits, token bucket for bursts
   grid.throttle("api_dock",
     limit: 100,
-    period: 60,
+    period: 60 * NS,
     algorithm: :token_bucket
   ) do |req|
     req.path.start_with?("/api") && req.ip
@@ -182,7 +189,7 @@ ThrottleMachines::RackMiddleware.configure do |grid|
   # Authentication airlock - strict limits
   grid.throttle("auth_airlock",
     limit: 5,
-    period: 300,  # 5 attempts per 5 minutes
+    period: 300 * NS,  # 5 attempts per 5 minutes
     algorithm: :fixed_window
   ) do |req|
     if req.path == "/login" && req.post?
@@ -240,11 +247,11 @@ ThrottleMachines::RackMiddleware.configure do |grid|
 
   # === Fail2Ban Shield Protocols ===
 
-  # Ban after too many 404s (probe detection)
-  grid.fail2ban("probe_shield",
-    maxretry: 20,     # 20 404s
-    findtime: 60,     # within 1 minute
-    bantime: 1800     # ban for 30 minutes
+  # Ban after too many 404s (probe detection). Keep the filter: you feed it.
+  PROBE_SHIELD = grid.fail2ban("probe_shield",
+    maxretry: 20,          # 20 404s
+    findtime: 60 * NS,     # within 1 minute
+    bantime: 1800 * NS     # ban for 30 minutes
   ) do |req|
     req.ip
   end
@@ -252,28 +259,29 @@ ThrottleMachines::RackMiddleware.configure do |grid|
   # In your ApplicationController:
   # after_action :record_not_found
   # def record_not_found
-  #   if response.status == 404
-  #     ThrottleMachines::RackMiddleware
-  #       .fail2ban("probe_shield")
-  #       .count(request) { true }
-  #   end
+  #   PROBE_SHIELD.count(request) { response.status == 404 }
   # end
+  #
+  # A banned ship's match_data carries time_until_unban (Integer ns).
 
   # === Response Customization ===
 
-  # Custom responses for different scenarios
+  # Custom responses for different scenarios.
+  # match_data[:retry_after] is Integer nanoseconds; the wire speaks whole seconds.
   grid.throttled_responder = lambda do |request|
+    match_data = request.env['rack.attack.match_data']
+    wait = match_data[:retry_after].ceildiv(NS)
     [
       429,
       {
         "content-type" => "application/json",
-        "retry-after" => request.env['rack.attack.match_data'][:retry_after].to_s
+        "retry-after" => wait.to_s
       },
       [{
         error: "Transmission rate exceeded",
         message: "Your ship is transmitting too rapidly",
-        retry_after: request.env['rack.attack.match_data'][:retry_after],
-        limit: request.env['rack.attack.match_data'][:limit]
+        retry_after: wait,
+        limit: match_data[:limit]
       }.to_json]
     ]
   end
@@ -304,7 +312,7 @@ class MultiTenantDefense
       # Each tenant gets their own limits
       grid.throttle("tenant_limits",
         limit: ->(req) { tenant_limit(req) },
-        period: 3600,
+        period: 3600 * NS,
         algorithm: :gcra
       ) do |req|
         tenant_id = extract_tenant_id(req)
@@ -352,7 +360,7 @@ class GeographicDefense
       # Different limits by region
       grid.throttle("regional_limits",
         limit: ->(req) { limit_for_region(req) },
-        period: 60,
+        period: 60 * NS,
         algorithm: :gcra
       ) do |req|
         "#{region_from_ip(req.ip)}:#{req.ip}"
@@ -398,7 +406,7 @@ class APIVersionDefense
       # Legacy API - strict limits to encourage upgrade
       grid.throttle("api_v1_limits",
         limit: 100,
-        period: 3600,
+        period: 3600 * NS,
         algorithm: :fixed_window
       ) do |req|
         req.path.start_with?("/api/v1") && extract_api_key(req)
@@ -407,7 +415,7 @@ class APIVersionDefense
       # Current API - generous limits
       grid.throttle("api_v2_limits",
         limit: 1000,
-        period: 3600,
+        period: 3600 * NS,
         algorithm: :gcra
       ) do |req|
         req.path.start_with?("/api/v2") && extract_api_key(req)
@@ -416,7 +424,7 @@ class APIVersionDefense
       # Beta API - moderate limits with monitoring
       grid.throttle("api_v3_beta",
         limit: 500,
-        period: 3600,
+        period: 3600 * NS,
         algorithm: :token_bucket
       ) do |req|
         if req.path.start_with?("/api/v3-beta")
@@ -446,31 +454,43 @@ end
 
 ## 🔧 Rails-Specific Enhancements
 
+There are no Cable or Job mixins: limiters are plain objects, so dock them
+wherever a request crosses the airlock.
+
 ### ActionCable Integration
 ```ruby
 # app/channels/application_cable/connection.rb
 module ApplicationCable
   class Connection < ActionCable::Connection::Base
-    include ThrottleMachines::Rails::Cable
+    NS = ThrottleMachines::NS_PER_SECOND
 
     identified_by :current_user
 
-    # Throttle WebSocket connections
-    throttle_connections limit: 5, period: 60
-
     def connect
+      # Ships with 10 failed handshakes in 5 minutes wait at the airlock
+      reject_unauthorized_connection unless auth_failures.allow?
+
+      # Throttle WebSocket connections: 5 per minute per origin
+      ThrottleMachines.limit("cable:connect:#{request.ip}", limit: 5, period: 60 * NS)
+
       self.current_user = find_verified_user
       logger.add_tags 'ActionCable', current_user.id
+    rescue ThrottleMachines::ThrottledError
+      reject_unauthorized_connection
     end
 
     private
+
+    def auth_failures
+      ThrottleMachines.limiter("cable:auth:#{request.ip}", limit: 10, period: 300 * NS)
+    end
 
     def find_verified_user
       if verified_user = User.find_by(id: cookies.signed[:user_id])
         verified_user
       else
-        # Throttle failed authentication attempts
-        throttle_failed_auth!(request.ip)
+        # Count the failed authentication attempt (raises ThrottledError at the limit)
+        auth_failures.throttle!
         reject_unauthorized_connection
       end
     end
@@ -481,18 +501,27 @@ end
 ### ActiveJob Integration
 ```ruby
 class ApplicationJob < ActiveJob::Base
-  include ThrottleMachines::Rails::Job
+  NS = ThrottleMachines::NS_PER_SECOND
 
-  # Throttle job execution rate
-  throttle_jobs queue: :default, limit: 1000, period: 60
+  # Throttle job execution rate: [limit, period ns, algorithm]
+  class_attribute :throttle_rate, default: [1000, 60 * NS, :fixed_window]
+
+  around_perform do |job, block|
+    limit, period, algorithm = job.throttle_rate
+    ThrottleMachines.limit("jobs:#{job.class.name}",
+      limit: limit, period: period, algorithm: algorithm, &block)
+  rescue ThrottleMachines::ThrottledError => e
+    # ActiveJob schedules in seconds: round the nanosecond wait up
+    job.retry_job(wait: e.retry_after.ceildiv(NS))
+  end
 
   # Custom throttling for specific job classes
   class HighPriorityJob < ApplicationJob
-    throttle_jobs limit: 10000, period: 60, algorithm: :gcra
+    self.throttle_rate = [10000, 60 * NS, :gcra]
   end
 
   class BatchProcessingJob < ApplicationJob
-    throttle_jobs limit: 10, period: 300, algorithm: :token_bucket
+    self.throttle_rate = [10, 300 * NS, :token_bucket]
   end
 end
 ```
@@ -520,9 +549,7 @@ class ThrottleHealthCheck
   end
 
   def self.storage_healthy?
-    ThrottleMachines.limiter("health_check", limit: 1, period: 1).allowed?
-  rescue
-    false
+    ThrottleMachines.storage.healthy?
   end
 
   def self.current_limit_status
@@ -530,7 +557,7 @@ class ThrottleHealthCheck
       {
         name: name,
         limit: throttle.limit,
-        period: throttle.period,
+        period: throttle.period,  # Integer ns (or a callable answering them)
         algorithm: throttle.algorithm
       }
     end
@@ -538,16 +565,17 @@ class ThrottleHealthCheck
 
   def self.performance_metrics
     {
-      avg_check_time: "0.1ms",  # Would need actual measurement
-      storage_latency: measure_storage_latency,
+      avg_check_time_ns: nil,   # Would need actual measurement
+      storage_latency_ns: measure_storage_latency,
       memory_usage: "2.1MB"     # Would need actual measurement
     }
   end
 
+  # Integer nanoseconds for one non-consuming check
   def self.measure_storage_latency
-    start = Time.current
-    ThrottleMachines.limiter("latency_test", limit: 1, period: 1).allowed?
-    ((Time.current - start) * 1000).round(2)
+    start = ThrottleMachines.monotonic_time
+    ThrottleMachines.limiter("latency_test", limit: 1, period: ThrottleMachines::NS_PER_SECOND).allow?
+    ThrottleMachines.monotonic_time - start
   end
 end
 ```
@@ -557,7 +585,7 @@ end
 ## 🚀 Next Missions
 
 - **[🔬 Space Lab](SPACE_LAB.md)** - Testing your integrations
-- **[📡 Telemetry](TELEMETRY.md)** - Monitoring planetary defenses  
+- **[📡 Telemetry](TELEMETRY.md)** - Monitoring planetary defenses
 - **[🎮 Command Examples](COMMAND_EXAMPLES.md)** - Battle-tested configurations
 
 ---

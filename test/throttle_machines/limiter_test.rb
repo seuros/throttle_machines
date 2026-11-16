@@ -5,7 +5,7 @@ require 'test_helper'
 module ThrottleMachines
   class LimiterTest < Test
     def test_basic_rate_limiting
-      limiter = ThrottleMachines.limiter('test', limit: 5, period: 1)
+      limiter = ThrottleMachines.limiter('test', limit: 5, period: 1 * NS)
 
       5.times do |i|
         assert_predicate limiter, :allow?, "Request #{i + 1} should be allowed"
@@ -17,7 +17,7 @@ module ThrottleMachines
     end
 
     def test_throttle_raises_error_when_limit_exceeded
-      limiter = ThrottleMachines.limiter('test', limit: 1, period: 1)
+      limiter = ThrottleMachines.limiter('test', limit: 1, period: 1 * NS)
 
       limiter.throttle! # First call succeeds
 
@@ -27,7 +27,7 @@ module ThrottleMachines
     end
 
     def test_rate_limit_resets_after_period
-      limiter = ThrottleMachines.limiter('test', limit: 1, period: 0.1)
+      limiter = ThrottleMachines.limiter('test', limit: 1, period: 100 * MS)
 
       assert_predicate limiter, :allow?
       limiter.throttle! # Consume the request
@@ -47,7 +47,7 @@ module ThrottleMachines
       define_method("test_#{algorithm}_reset_is_confined_to_its_own_limiter") do
         storage = Storage::Memory.new(auto_cleanup: false)
         limiters = CONFINEMENT_KEYS.to_h do |key|
-          limiter = Limiter.new(key, limit: 1, period: 600, algorithm: algorithm, storage: storage)
+          limiter = Limiter.new(key, limit: 1, period: 600 * NS, algorithm: algorithm, storage: storage)
           limiter.throttle!
           [key, limiter]
         end
@@ -66,9 +66,9 @@ module ThrottleMachines
     end
 
     def test_global_reset_of_a_key_spares_a_key_it_prefixes
-      pacer = ThrottleMachines.limiter('account:1', limit: 1, period: 600, algorithm: :gcra)
-      neighbour = ThrottleMachines.limiter('account:10', limit: 1, period: 600, algorithm: :gcra)
-      counter = ThrottleMachines.limiter('account:1', limit: 1, period: 600)
+      pacer = ThrottleMachines.limiter('account:1', limit: 1, period: 600 * NS, algorithm: :gcra)
+      neighbour = ThrottleMachines.limiter('account:10', limit: 1, period: 600 * NS, algorithm: :gcra)
+      counter = ThrottleMachines.limiter('account:1', limit: 1, period: 600 * NS)
       [pacer, neighbour, counter].each(&:throttle!)
 
       ThrottleMachines.reset!('account:1')
@@ -83,7 +83,7 @@ module ThrottleMachines
       error_count = 0
 
       5.times do
-        ThrottleMachines.limit('api:test', limit: 3, period: 1) do
+        ThrottleMachines.limit('api:test', limit: 3, period: 1 * NS) do
           call_count += 1
         end
       rescue ThrottledError

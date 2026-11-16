@@ -1,0 +1,555 @@
+# Every instant and span is Integer nanoseconds (`now`, periods, windows,
+# intervals, TTLs, waits). Arguments are in 0..2**64-1, except a native
+# gate's `now`, `tat`, `refilled_at` and `window_start`, which take any
+# instant a Duration holds (0..(2**64 * 10**9) - 1).
+#
+# Every Data value validates when built, by the gem or by hand: TypeError for
+# the wrong type, RangeError for a value the core rejects.
+module ThrottleMachines
+  VERSION: String
+  NS_PER_SECOND: Integer
+
+  # Refusals: the call was not honoured and changed nothing. The native gates
+  # answer :throttled, and Gcra :overflow when an admission would push its
+  # TAT past the largest instant; a store that cannot track another key
+  # answers :full.
+  type refusal = :throttled | :full | :overflow
+  type answer = Integer | refusal
+  type algorithm = :fixed_window | :gcra | :token_bucket
+
+  class GcraPolicy < Data
+    attr_reader emission_interval: Integer
+    attr_reader delay_tolerance: Integer
+    def self.new: (Integer emission_interval, Integer delay_tolerance) -> GcraPolicy
+                | (emission_interval: Integer, delay_tolerance: Integer) -> GcraPolicy
+    def self.per: (Integer period, Integer limit, Integer burst) -> GcraPolicy
+  end
+
+  class TokenBucketPolicy < Data
+    attr_reader capacity: Integer
+    attr_reader refill_every: Integer
+    def self.new: (Integer capacity, Integer refill_every) -> TokenBucketPolicy
+                | (capacity: Integer, refill_every: Integer) -> TokenBucketPolicy
+    def self.per: (Integer period, Integer limit) -> TokenBucketPolicy
+  end
+
+  class FixedWindowPolicy < Data
+    attr_reader window: Integer
+    attr_reader limit: Integer
+    def self.new: (Integer window, Integer limit) -> FixedWindowPolicy
+                | (window: Integer, limit: Integer) -> FixedWindowPolicy
+  end
+
+  # The native gates. `check` admits one call and answers how many more would
+  # be admitted at the same instant; `peek` answers how many would be, at
+  # least one; both answer a refusal otherwise. `retry_after` answers the
+  # largest instant when no instant admits. A frozen gate raises
+  # FrozenError on `check` and `refund`.
+  class Gcra
+    def self.new: (GcraPolicy policy) -> Gcra
+    def self.restored: (GcraPolicy policy, Integer tat) -> Gcra
+    def check: (Integer now) -> answer
+    def peek: (Integer now) -> answer
+    def retry_after: (Integer now) -> Integer
+    def refund: () -> nil
+    def policy: () -> GcraPolicy
+    def tat: () -> Integer
+  end
+
+  class TokenBucket
+    def self.new: (TokenBucketPolicy policy) -> TokenBucket
+    def self.restored: (TokenBucketPolicy policy, Integer tokens, Integer refilled_at) -> TokenBucket
+    def check: (Integer now) -> answer
+    def peek: (Integer now) -> answer
+    def retry_after: (Integer now) -> Integer
+    def refund: () -> nil
+    def policy: () -> TokenBucketPolicy
+    def tokens: () -> Integer
+    def refilled_at: () -> Integer
+  end
+
+  class FixedWindow
+    def self.new: (FixedWindowPolicy policy) -> FixedWindow
+    def self.restored: (FixedWindowPolicy policy, Integer count, Integer window_start) -> FixedWindow
+    def check: (Integer now) -> answer
+    def peek: (Integer now) -> answer
+    def retry_after: (Integer now) -> Integer
+    def refund: () -> nil
+    def policy: () -> FixedWindowPolicy
+    def count: () -> Integer
+    def window_start: () -> Integer
+  end
+
+  class Configuration
+    attr_accessor default_storage: untyped
+    attr_accessor default_algorithm: algorithm
+    attr_accessor instrumentation_enabled: bool
+    attr_accessor instrumentation_backend: untyped
+    attr_accessor _storage_instance: Storage::Base?
+    attr_reader fiber_safe: bool
+    def initialize: () -> void
+    def fiber_safe=: (untyped value) -> untyped
+  end
+
+  def self.config: () -> Configuration
+  def self.monotonic_time: () -> Integer
+  def self.configure: () ?{ (Configuration) -> void } -> void
+  def self.storage: () -> Storage::Base
+  def self.storage=: (Symbol | Class | Storage::Base value) -> Storage::Base
+  def self.reset!: (?String? key) -> void
+  # The block runs instance_eval'd on the Control.
+  def self.control: (String key) ?{ (Control) [self: Control] -> void } -> Control
+  def self.limit: (String key, limit: Integer, period: Integer, ?algorithm: algorithm?) ?{ () -> untyped } -> untyped
+  def self.break_circuit: (String key, failures: Integer, within: Integer, ?timeout: Integer) { () -> untyped } -> untyped
+  def self.retry_with: (untyped strategy, Integer? max_attempts, **untyped runtime) { () -> untyped } -> untyped
+  def self.limiter: (String key, limit: Integer, period: Integer, ?algorithm: algorithm?) -> Limiter
+  def self.async_breaker: (*untyped, **untyped) -> untyped
+  def self.load_async_runtime!: () -> true
+  def self.hedged_request: (**untyped) { (Integer attempt) -> untyped } -> untyped
+
+  private def self.create_storage: (Symbol | Class | Storage::Base storage) -> Storage::Base
+  private def self.create_storage_from_symbol: (Symbol symbol) -> Storage::Base
+
+  # Native validators and constructors behind the Data values above
+  # (ext/throttle_machines_native/ffi/src/values.rs): each raises TypeError
+  # or RangeError for what the core rejects.
+  private def self.__gcra_policy: (Integer emission_interval, Integer delay_tolerance) -> nil
+  private def self.__token_bucket_policy: (Integer capacity, Integer refill_every) -> nil
+  private def self.__fixed_window_policy: (Integer window, Integer limit) -> nil
+  # [emission_interval, delay_tolerance]
+  private def self.__gcra_per: (Integer period, Integer limit, Integer burst) -> [Integer, Integer]
+  # [capacity, refill_every]
+  private def self.__token_bucket_per: (Integer period, Integer limit) -> [Integer, Integer]
+
+  CircuitOpenError: untyped
+  RetryExhaustedError: untyped
+
+  # The seam to BreakerMachines circuits: Policy shaping and spans read off a
+  # circuit's clock, all Integer nanoseconds.
+  module Breakers
+    module Failure
+      def self.===: (untyped error) -> bool
+    end
+
+    # module_function: public on the module, private when included.
+    def self?.policy: (Integer failures, Integer window, Integer cooldown) -> untyped
+    def self?.dynamic: (String name, untyped owner, Integer failures, Integer window, Integer cooldown, **untyped runtime) -> untyped
+    def self?.since: (untyped circuit) -> Integer?
+  end
+
+  class Limiter
+    include AsyncSupport
+
+    ALGORITHMS: Array[algorithm]
+    attr_reader key: String
+    attr_reader limit: Integer
+    attr_reader period: Integer
+    attr_reader algorithm: algorithm
+    attr_reader storage: Storage::Base
+    attr_reader policy: GcraPolicy | TokenBucketPolicy | FixedWindowPolicy
+    def initialize: (String key, limit: Integer, period: Integer, ?algorithm: algorithm, ?storage: Storage::Base?) -> void
+    def allow?: () -> bool
+    def throttle!: () ?{ () -> untyped } -> untyped
+    def reset!: () -> untyped
+    def remaining: () -> Integer
+    def retry_after: () -> Integer
+    def to_h: () -> Hash[Symbol, untyped]
+
+    private
+
+    # Calls left after this admission, or a refusal.
+    def check: () -> answer
+    # Calls admitted now, at least one, or a refusal.
+    def peek: () -> answer
+    def build_policy: () -> (GcraPolicy | TokenBucketPolicy | FixedWindowPolicy)
+    def positive: (Integer value, String name) -> Integer
+    def validate_algorithm!: () -> void
+  end
+
+  module AsyncSupport
+    def allowed_async?: () -> bool
+    def check_async: () ?{ () -> untyped } -> bool
+    def throttle_async: (?max_wait: Integer?) ?{ () -> untyped } -> untyped
+
+    private
+
+    def sleep_for: (Integer nanoseconds) -> void
+    # The current Async::Task, or nil outside one (or without async).
+    def current_async_task: () -> untyped
+  end
+
+  class Control
+    attr_reader key: String
+    attr_reader limiter: Limiter?
+    attr_reader breaker: untyped
+    attr_reader retrier: untyped
+    def initialize: (String key) -> void
+    def limit: (rate: Integer, per: Integer, ?algorithm: algorithm) -> self
+    def break_on: (failures: Integer, within: Integer, ?timeout: Integer?) -> self
+    def retry_on_failure: (untyped strategy, Integer? max_attempts, **untyped runtime) -> self
+    def call: () { () -> untyped } -> untyped
+
+    private
+
+    def setup_components: () -> void
+  end
+
+  class ThrottledError < StandardError
+    attr_reader limiter: Limiter
+    def initialize: (Limiter limiter) -> void
+    def retry_after: () -> Integer
+  end
+
+  class UnsupportedOperationError < StandardError
+  end
+
+  class AsyncBreaker
+    def self.new: (String name, untyped policy, **untyped runtime) -> untyped
+  end
+
+  class HedgedRequest
+    attr_reader delay: Integer
+    attr_reader max_attempts: Integer
+    attr_reader timeout: Integer?
+    def initialize: (?delay: Integer, ?max_attempts: Integer, ?timeout: Integer?) -> void
+    def run: () { (Integer attempt) -> untyped } -> untyped
+    def run_async: () { (Integer attempt) -> untyped } -> untyped
+    def shutdown: () -> untyped
+
+    private
+
+    def span: (Integer value, String name) -> Integer
+    def seconds: (Integer nanoseconds) -> Rational
+  end
+
+  class HedgedBreaker
+    def initialize: (untyped breakers, ?delay: Integer) -> void
+    def run: () { () -> untyped } -> untyped
+  end
+
+  module Instrumentation
+    attr_writer self.enabled: bool
+    attr_writer self.backend: untyped
+    def self.enabled: () -> bool
+    def self.backend: () -> untyped
+    def self.active?: () -> bool
+    def self.instrument: (String event_name, ?Hash[Symbol, untyped] payload) ?{ () -> untyped } -> untyped
+    def self.rate_limit_checked: (Limiter limiter, allowed: bool, ?remaining: Integer?) -> untyped
+    def self.rate_limit_allowed: (Limiter limiter, ?remaining: Integer?) -> untyped
+    def self.rate_limit_throttled: (Limiter limiter, ?retry_after: Integer?) -> untyped
+    def self.hedged_request_started: (String request_id, attempts: Integer) -> untyped
+    def self.hedged_request_winner: (String request_id, attempt: Integer, duration: Integer) -> untyped
+  end
+
+  class Middleware
+    # The block runs instance_eval'd on the middleware.
+    def initialize: (untyped app) ?{ (Middleware) [self: Middleware] -> void } -> void
+    def call: (Hash[String, untyped] env) -> [Integer, Hash[String, String], Array[String]]
+    def throttle: (untyped path, limit: Integer, period: Integer, ?by: untyped, ?algorithm: algorithm) -> untyped
+
+    private
+
+    # A String, Regexp or callable path, as a request predicate.
+    def build_matcher: (untyped path) -> ^(untyped request) -> untyped
+    # :ip, a session Symbol, a callable or a literal, as a request key.
+    def build_key_generator: (untyped by) -> ^(untyped request) -> untyped
+    def rate_limit_response: (Limiter limiter) -> [Integer, Hash[String, String], Array[String]]
+  end
+
+  module ControllerHelpers
+    def throttle!: (?String? key, limit: Integer, period: Integer, ?algorithm: algorithm) -> untyped
+    def with_throttle: (?String? key, limit: Integer, period: Integer) { () -> untyped } -> untyped
+    def rate_limited?: (?String? key, limit: Integer, period: Integer) -> bool
+    def rate_limit_remaining: (?String? key, limit: Integer, period: Integer) -> Integer
+
+    private
+
+    def default_throttle_key: () -> String
+    def set_rate_limit_headers: (Limiter limiter) -> String
+    def render_rate_limited: (Limiter limiter) -> untyped
+  end
+
+  class RackMiddleware
+    attr_accessor self.enabled: bool
+    attr_accessor self.notifier: untyped
+    attr_reader self.configuration: Configuration
+    # The block runs instance_eval'd on the configuration.
+    def self.configure: () ?{ (Configuration) [self: Configuration] -> void } -> void
+    def self.reset!: () -> void
+    def self.clear!: () -> Configuration
+    def self.instrument: (untyped request) -> untyped
+    def self.throttle: (untyped name, ?Hash[Symbol, untyped] options) { (untyped) -> untyped } -> Throttle
+    def self.track: (untyped name, ?Hash[Symbol, untyped] options) { (untyped) -> untyped } -> Track
+    def self.safelist: (?untyped name) { (untyped) -> untyped } -> untyped
+    def self.blocklist: (?untyped name) { (untyped) -> untyped } -> untyped
+    def self.blocklist_ip: (String ip_address) -> untyped
+    def self.safelist_ip: (String ip_address) -> untyped
+    def self.fail2ban: (untyped name, ?Hash[Symbol, untyped] options) { (untyped) -> untyped } -> Fail2Ban
+    def self.allow2ban: (untyped name, ?Hash[Symbol, untyped] options) { (untyped) -> untyped } -> Allow2Ban
+    def self.throttled_responder: () -> untyped
+    def self.throttled_responder=: (untyped responder) -> untyped
+    def self.blocklisted_responder: () -> untyped
+    def self.blocklisted_responder=: (untyped responder) -> untyped
+    def self.throttles: () -> Hash[untyped, Throttle]
+    def self.tracks: () -> Hash[untyped, Track]
+    def self.safelists: () -> Hash[untyped, Safelist]
+    def self.blocklists: () -> Hash[untyped, Blocklist]
+    def self.fail2bans: () -> Hash[untyped, Fail2Ban]
+    def self.allow2bans: () -> Hash[untyped, Allow2Ban]
+    def initialize: (untyped app) -> void
+    def call: (Hash[String, untyped] env) -> untyped
+
+    class Configuration
+      DEFAULT_BLOCKLISTED_RESPONDER: untyped
+      DEFAULT_THROTTLED_RESPONDER: untyped
+      attr_reader throttles: Hash[untyped, Throttle]
+      attr_reader tracks: Hash[untyped, Track]
+      attr_reader safelists: Hash[untyped, Safelist]
+      attr_reader blocklists: Hash[untyped, Blocklist]
+      attr_reader fail2bans: Hash[untyped, Fail2Ban]
+      attr_reader allow2bans: Hash[untyped, Allow2Ban]
+      attr_accessor throttled_responder: untyped
+      attr_accessor blocklisted_responder: untyped
+      def initialize: () -> void
+      def throttle: (untyped name, ?Hash[Symbol, untyped] options) { (untyped) -> untyped } -> Throttle
+      def track: (untyped name, ?Hash[Symbol, untyped] options) { (untyped) -> untyped } -> Track
+      def safelist: (?untyped name) { (untyped) -> untyped } -> untyped
+      def blocklist: (?untyped name) { (untyped) -> untyped } -> untyped
+      def safelist_ip: (String ip_address) -> untyped
+      def blocklist_ip: (String ip_address) -> untyped
+      def fail2ban: (untyped name, ?Hash[Symbol, untyped] options) { (untyped) -> untyped } -> Fail2Ban
+      def allow2ban: (untyped name, ?Hash[Symbol, untyped] options) { (untyped) -> untyped } -> Allow2Ban
+      def safelisted?: (untyped request) -> bool
+      def blocklisted?: (untyped request) -> bool
+      def throttled?: (untyped request) -> bool
+      def tracked?: (untyped request) -> untyped
+    end
+
+    class Request
+      def user_agent: () -> String?
+    end
+
+    class ListFilter
+      attr_reader name: untyped
+      attr_reader block: untyped
+      def initialize: (untyped name) ?{ (untyped) -> untyped } -> void
+      def matched_by?: (untyped request) -> bool
+
+      private
+
+      def match_type: () -> Symbol
+    end
+
+    class Safelist < ListFilter
+      private
+
+      def match_type: () -> :safelist
+    end
+
+    class Blocklist < ListFilter
+      private
+
+      def match_type: () -> :blocklist
+    end
+
+    # `findtime` and `bantime` are Integer nanoseconds.
+    class BanFilter
+      attr_reader name: untyped
+      attr_reader maxretry: Integer
+      attr_reader findtime: Integer
+      attr_reader bantime: Integer
+      attr_reader block: untyped
+      def initialize: (untyped name, Hash[Symbol, untyped] options) { (untyped) -> untyped } -> void
+
+      private
+
+      def discriminator_for: (untyped request) -> untyped
+    end
+
+    class Fail2Ban < BanFilter
+      def banned?: (untyped request) -> bool
+      def count: (untyped request) { () -> bool } -> untyped
+    end
+
+    class Allow2Ban < BanFilter
+      def matched_by?: (untyped request) -> false
+    end
+
+    class Throttle
+      attr_reader name: untyped
+      attr_reader limit: untyped
+      attr_reader period: untyped
+      attr_reader block: untyped
+      attr_reader algorithm: algorithm
+      def initialize: (untyped name, Hash[Symbol, untyped] options) { (untyped) -> untyped } -> void
+      def matched_by?: (untyped request) -> bool
+
+      private
+
+      def discriminator_for: (untyped request) -> untyped
+      # `limit` and `period` may be callables answering them per request.
+      def limit_for: (untyped request) -> Integer
+      def period_for: (untyped request) -> Integer
+      def annotate_request_with_throttle_data: (untyped request, Hash[Symbol, untyped] data) -> Hash[Symbol, untyped]
+      def annotate_request_with_matched_data: (untyped request, Hash[Symbol, untyped] data) -> Hash[Symbol, untyped]
+    end
+
+    class Track
+      attr_reader name: untyped
+      attr_reader block: untyped
+      attr_reader limit: Integer?
+      attr_reader period: Integer?
+      def initialize: (untyped name, ?Hash[Symbol, untyped] options) { (untyped) -> untyped } -> void
+      def matched_by?: (untyped request) -> false
+    end
+  end
+
+  module Storage
+    class Base
+      ALGORITHM_OPERATIONS: Hash[algorithm, Array[Symbol]]
+      HEALTH_KEY: String
+      UNTRACKED: Integer
+      KEY_SEPARATOR: String
+      GLOB_WILDCARD: String
+      GLOB_SPECIALS: Regexp
+      def initialize: (?Hash[Symbol, untyped] options) -> void
+      def supports?: (Symbol algorithm) -> bool
+      def increment_counter: (String key, Integer window, ?Integer amount) -> Integer
+      def get_counter: (String key, Integer window) -> Integer
+      def get_counter_ttl: (String key, Integer window) -> Integer
+      def reset_counter: (String key, Integer window) -> untyped
+      def check_gcra: (String key, GcraPolicy policy, Integer ttl) -> answer
+      def peek_gcra: (String key, GcraPolicy policy) -> answer
+      def gcra_retry_after: (String key, GcraPolicy policy) -> Integer
+      def reset_gcra: (String key) -> untyped
+      def check_token_bucket: (String key, TokenBucketPolicy policy, Integer ttl) -> answer
+      def peek_token_bucket: (String key, TokenBucketPolicy policy) -> answer
+      def token_bucket_retry_after: (String key, TokenBucketPolicy policy) -> Integer
+      def reset_token_bucket: (String key) -> untyped
+      def clear: (?String? pattern) -> untyped
+      def reset_key: (String key) -> untyped
+      def healthy?: () -> bool
+      # Timeout.timeout yields the seconds it was given.
+      def with_timeout: [T] (Integer timeout) { (Rational seconds) -> T } -> T
+
+      # Protected in Ruby; RBS has no protected, and every caller uses an
+      # implicit receiver.
+      private def owned_by?: (String stored_key, String key) -> bool
+      private def escape_glob: (String literal) -> String
+      private def glob_to_regexp: (String glob) -> Regexp
+      private def current_time: () -> Integer
+
+      private def unsupported: (Symbol operation) -> bot
+    end
+
+    class Memory < Base
+      DEFAULT_MAX_KEYS: Integer
+      CAPACITY_RETRY_AFTER: Integer
+      DEFAULT_CLEANUP_INTERVAL: Integer
+      DEFAULT_LOCK_POOL_SIZE: Integer
+      SHUTDOWN_GRACE: Float
+      # A stored counter ({count:, expires_at:}), GCRA state ({tat:,
+      # expires_at:}) or bucket ({tokens:, refilled_at:, expires_at:}).
+      type entry = Hash[Symbol, Integer]
+
+      def self.finalizer: (Thread cleanup_thread) -> Proc
+      def shutdown: () -> void
+
+      private
+
+      def delete_where: () { (String stored_key) -> boolish } -> void
+      def store_entry: (Hash[String, entry] store, String key, entry value) -> bool
+      def delete_entry: (Hash[String, entry] store, String key) -> entry?
+      def capacity_available?: (Hash[String, entry] store, String key) -> bool
+      # The key's gate, or nil when it is untracked and the store is full.
+      def gcra_gate: (String key, GcraPolicy policy) -> Gcra?
+      def bucket_gate: (String key, TokenBucketPolicy policy) -> TokenBucket?
+      def restored_bucket: (TokenBucketPolicy policy, entry entry) -> TokenBucket
+      def reclaim_capacity: () -> void
+      def with_read_lock: [T] (String key) { () -> T } -> T
+      def with_write_lock: [T] (String key) { () -> T } -> T
+      def clean_expired_entries: () -> void
+
+      # Every map, lock and counter the cleanup worker sweeps.
+      class State
+        attr_reader counters: Hash[String, entry]
+        attr_reader gcra_states: Hash[String, entry]
+        attr_reader token_buckets: Hash[String, entry]
+        def initialize: (max_keys: Integer, lock_pool_size: Integer, cleanup_interval: Integer) -> void
+        def start_cleanup_thread: () -> Thread
+        def shutdown!: () -> true
+        def stores: () -> [Hash[String, entry], Hash[String, entry], Hash[String, entry]]
+        def stored_keys: () -> Integer
+        def saturated?: () -> bool
+        def with_read_lock: [T] (String key) { () -> T } -> T
+        def with_write_lock: [T] (String key) { () -> T } -> T
+        # false when the key is new and the store is at max_keys.
+        def store_entry: (Hash[String, entry] store, String key, entry value) -> bool
+        def delete_entry: (Hash[String, entry] store, String key) -> entry?
+        def capacity_available?: (Hash[String, entry] store, String key) -> bool
+        def clear_all: () -> void
+        def clean_expired_entries: () -> void
+
+        private
+
+        # The key's stripe, a Concurrent::ReadWriteLock.
+        def lock_for: (String key) -> untyped
+      end
+    end
+
+    class Redis < Base
+      NS_PER_MILLISECOND: Integer
+      LUA_SCRIPTS_DIR: String
+      GCRA_SCRIPT: String
+      TOKEN_BUCKET_SCRIPT: String
+      PEEK_GCRA_SCRIPT: String
+      PEEK_TOKEN_BUCKET_SCRIPT: String
+      INCREMENT_COUNTER_SCRIPT: String
+      GCRA_SHA: String
+      TOKEN_BUCKET_SHA: String
+      PEEK_GCRA_SHA: String
+      PEEK_TOKEN_BUCKET_SHA: String
+      INCREMENT_COUNTER_SHA: String
+      SCAN_BATCH: Integer
+
+      # A peek script's reply: [allowed (1 or 0), calls admitted, nanoseconds
+      # to wait]. A refusal formats the wait as a decimal String, past what a
+      # Lua integer reply holds exactly.
+      type peek_reply = [Integer, Integer, Integer | String]
+
+      private
+
+      def delete_state: (String key) -> Integer
+      def delete_matching: (String scan_pattern) -> void
+      def admitted: (peek_reply reply) -> answer
+      def peek_gcra_reply: (String key, GcraPolicy policy) -> peek_reply
+      def peek_token_bucket_reply: (String key, TokenBucketPolicy policy) -> peek_reply
+      def window_key: (String key, Integer window) -> String
+      # Whole milliseconds, rounded up, at least one.
+      def milliseconds: (Integer nanoseconds) -> Integer
+      def prefixed: (String key) -> String
+      def run_script: (String script, String sha, keys: Array[String], argv: Array[Integer]) -> untyped
+      def validate_redis_connection!: () -> void
+      # Yields the client, or a connection checked out of a pool.
+      def with_redis: [T] () { (untyped redis) -> T } -> T
+    end
+
+    class Cache < Base
+      PATTERN_SPECIALS: Regexp
+
+      private
+
+      def window_key: (String key, Integer window) -> String
+      def positive_window: (Integer window) -> Integer
+      def delete_matched: (String | Regexp matcher) -> untyped
+      # A glob for a Redis-backed cache, a Regexp otherwise.
+      def matcher_for: (String glob) -> (String | Regexp)
+      def prefix_matcher: (String literal) -> (String | Regexp)
+      # Integer nanoseconds since the Unix epoch.
+      def wall_time: () -> Integer
+    end
+
+    class Null < Base
+    end
+  end
+end

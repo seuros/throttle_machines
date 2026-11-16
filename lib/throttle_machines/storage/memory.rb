@@ -6,15 +6,18 @@ module ThrottleMachines
   module Storage
     class Memory < Base
       DEFAULT_MAX_KEYS = 65_536
-      CAPACITY_RETRY_AFTER = 1.0
-      DEFAULT_CLEANUP_INTERVAL = 60
+      # Integer nanoseconds a key refused as :full is told to wait.
+      CAPACITY_RETRY_AFTER = NS_PER_SECOND
+      # Integer nanoseconds between background sweeps of expired entries.
+      DEFAULT_CLEANUP_INTERVAL = 60 * NS_PER_SECOND
       DEFAULT_LOCK_POOL_SIZE = 32
       SHUTDOWN_GRACE = 1.0
 
       def initialize(options = {})
         super
         max_keys = options.fetch(:max_keys, DEFAULT_MAX_KEYS)
-        raise ArgumentError, 'max_keys must be a non-negative integer' unless max_keys.is_a?(Integer) && max_keys >= 0
+        raise TypeError, "max_keys must be an Integer, got #{max_keys.inspect}" unless max_keys.is_a?(Integer)
+        raise RangeError, "max_keys must not be negative, got #{max_keys}" if max_keys.negative?
 
         @state = State.new(
           max_keys: max_keys,
@@ -26,7 +29,7 @@ module ThrottleMachines
         @token_buckets = @state.token_buckets
 
         @capacity_cleanup_lock = Mutex.new
-        @next_capacity_cleanup_at = -Float::INFINITY
+        @next_capacity_cleanup_at = nil
         @cleanup_thread = nil
 
         return if options[:auto_cleanup] == false
@@ -59,7 +62,7 @@ module ThrottleMachines
             stored = store_entry(@counters, window_key, { count: new_count, expires_at: counter[:expires_at] })
           end
           # An untrackable counter must never look like an admitted request.
-          stored ? new_count : Float::INFINITY
+          stored ? new_count : UNTRACKED
         end
       end
 
@@ -69,7 +72,7 @@ module ThrottleMachines
 
         with_read_lock(window_key) do
           counter = @counters[window_key]
-          return capacity_available?(@counters, window_key) ? 0 : Float::INFINITY unless counter
+          return capacity_available?(@counters, window_key) ? 0 : UNTRACKED unless counter
           return 0 if counter[:expires_at] <= current_time
 
           counter[:count]
@@ -93,47 +96,38 @@ module ThrottleMachines
         with_write_lock(window_key) { delete_entry(@counters, window_key) }
       end
 
-      # GCRA operations (atomic simulation)
-      def check_gcra_limit(key, emission_interval, delay_tolerance, ttl)
+      # GCRA and token bucket state is the core gate's own, kept per key as
+      # the values `restored` takes, so a limiter whose policy changes
+      # resumes from where the key's state left off. A refusal stores
+      # nothing.
+      def check_gcra(key, policy, ttl)
         reclaim_capacity
         with_write_lock(key) do
           now = current_time
-          state = @gcra_states[key] || { tat: 0.0 }
+          entry = @gcra_states[key]
+          return :full unless entry || capacity_available?(@gcra_states, key)
 
-          tat = [state[:tat], now].max
-          allow = gcra_allowed?(tat, now, delay_tolerance)
+          gate = entry ? Gcra.restored(policy, entry[:tat]) : Gcra.new(policy)
+          answer = gate.check(now)
+          return answer unless answer.is_a?(Integer)
+          return :full unless store_entry(@gcra_states, key, { tat: gate.tat, expires_at: now + ttl })
 
-          if allow
-            new_tat = tat + emission_interval
-            unless store_entry(@gcra_states, key, { tat: new_tat, expires_at: now + ttl })
-              return capacity_gcra_refusal(now, delay_tolerance)
-            end
-          end
-
-          {
-            allowed: allow,
-            retry_after: allow ? 0.0 : (tat - now - delay_tolerance),
-            tat: tat
-          }
+          answer
         end
       end
 
-      def peek_gcra_limit(key, _emission_interval, delay_tolerance)
+      def peek_gcra(key, policy)
         reclaim_capacity
         with_read_lock(key) do
-          now = current_time
-          return capacity_gcra_refusal(now, delay_tolerance) unless capacity_available?(@gcra_states, key)
+          gate = gcra_gate(key, policy)
+          gate ? gate.peek(current_time) : :full
+        end
+      end
 
-          state = @gcra_states[key] || { tat: 0.0 }
-
-          tat = [state[:tat], now].max
-          allow = gcra_allowed?(tat, now, delay_tolerance)
-
-          {
-            allowed: allow,
-            retry_after: allow ? 0.0 : (tat - now - delay_tolerance),
-            tat: tat
-          }
+      def gcra_retry_after(key, policy)
+        with_read_lock(key) do
+          gate = gcra_gate(key, policy)
+          gate ? gate.retry_after(current_time) : CAPACITY_RETRY_AFTER
         end
       end
 
@@ -141,71 +135,36 @@ module ThrottleMachines
         with_write_lock(key) { delete_entry(@gcra_states, key) }
       end
 
-      # Token bucket operations (atomic simulation)
-      def check_token_bucket(key, capacity, refill_rate, ttl)
+      def check_token_bucket(key, policy, ttl)
         reclaim_capacity
         with_write_lock(key) do
           now = current_time
-          bucket = @token_buckets[key] || { tokens: capacity, last_refill: now }
+          entry = @token_buckets[key]
+          return :full unless entry || capacity_available?(@token_buckets, key)
 
-          # Refill tokens
-          elapsed = now - bucket[:last_refill]
-          tokens_to_add = elapsed * refill_rate
-          bucket[:tokens] = [bucket[:tokens] + tokens_to_add, capacity].min
-          bucket[:last_refill] = now
+          gate = entry ? restored_bucket(policy, entry) : TokenBucket.new(policy)
+          answer = gate.check(now)
+          return answer unless answer.is_a?(Integer)
 
-          # Check if we can consume a token
-          if token_available?(bucket[:tokens], now, refill_rate)
-            bucket[:tokens] = [bucket[:tokens] - 1, 0.0].max
-            unless store_entry(@token_buckets, key, bucket.merge(expires_at: now + ttl))
-              return capacity_token_bucket_refusal
-            end
+          state = { tokens: gate.tokens, refilled_at: gate.refilled_at, expires_at: now + ttl }
+          return :full unless store_entry(@token_buckets, key, state)
 
-            {
-              allowed: true,
-              retry_after: 0.0,
-              tokens_remaining: bucket[:tokens].floor
-            }
-          else
-            retry_after = (1 - bucket[:tokens]) / refill_rate
-
-            {
-              allowed: false,
-              retry_after: retry_after,
-              tokens_remaining: 0
-            }
-          end
+          answer
         end
       end
 
-      def peek_token_bucket(key, capacity, refill_rate)
+      def peek_token_bucket(key, policy)
         reclaim_capacity
         with_read_lock(key) do
-          now = current_time
-          return capacity_token_bucket_refusal unless capacity_available?(@token_buckets, key)
+          gate = bucket_gate(key, policy)
+          gate ? gate.peek(current_time) : :full
+        end
+      end
 
-          bucket = @token_buckets[key] || { tokens: capacity, last_refill: now }
-
-          # Calculate tokens without modifying state
-          elapsed = now - bucket[:last_refill]
-          tokens_to_add = elapsed * refill_rate
-          current_tokens = [bucket[:tokens] + tokens_to_add, capacity].min
-
-          if token_available?(current_tokens, now, refill_rate)
-            {
-              allowed: true,
-              retry_after: 0.0,
-              tokens_remaining: [current_tokens - 1, 0].max.floor
-            }
-          else
-            retry_after = (1 - current_tokens) / refill_rate
-
-            {
-              allowed: false,
-              retry_after: retry_after,
-              tokens_remaining: 0
-            }
-          end
+      def token_bucket_retry_after(key, policy)
+        with_read_lock(key) do
+          gate = bucket_gate(key, policy)
+          gate ? gate.retry_after(current_time) : CAPACITY_RETRY_AFTER
         end
       end
 
@@ -263,12 +222,25 @@ module ThrottleMachines
         @state.capacity_available?(store, key)
       end
 
-      def capacity_gcra_refusal(now, delay_tolerance)
-        { allowed: false, retry_after: CAPACITY_RETRY_AFTER, tat: now + delay_tolerance + CAPACITY_RETRY_AFTER }
+      # The key's gate, or nil when it is untracked and the store is full.
+      def gcra_gate(key, policy)
+        entry = @gcra_states[key]
+        return Gcra.restored(policy, entry[:tat]) if entry
+
+        Gcra.new(policy) if capacity_available?(@gcra_states, key)
       end
 
-      def capacity_token_bucket_refusal
-        { allowed: false, retry_after: CAPACITY_RETRY_AFTER, tokens_remaining: 0 }
+      def bucket_gate(key, policy)
+        entry = @token_buckets[key]
+        return restored_bucket(policy, entry) if entry
+
+        TokenBucket.new(policy) if capacity_available?(@token_buckets, key)
+      end
+
+      # A capacity lowered since the key was stored keeps at most a full
+      # bucket.
+      def restored_bucket(policy, entry)
+        TokenBucket.restored(policy, [entry[:tokens], policy.capacity].min, entry[:refilled_at])
       end
 
       # Run before taking any striped lock. At saturation, attempt expiry
@@ -280,7 +252,7 @@ module ThrottleMachines
 
         begin
           now = current_time
-          return if now < @next_capacity_cleanup_at
+          return if @next_capacity_cleanup_at && now < @next_capacity_cleanup_at
 
           @next_capacity_cleanup_at = now + CAPACITY_RETRY_AFTER
           clean_expired_entries
@@ -325,7 +297,7 @@ module ThrottleMachines
             loop do
               break if @shutdown
 
-              sleep @cleanup_interval
+              sleep Rational(@cleanup_interval, NS_PER_SECOND)
               break if @shutdown
 
               clean_expired_entries
